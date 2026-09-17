@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '../context/AdminAuthContext';
 import { cx } from '../lib/designTokens';
 import {
-  Activity, ArrowLeftRight, ClipboardList, Coins, LayoutDashboard, LogOut, Shield,
-  ScrollText, Users, Wallet,
+  Activity, ClipboardList, Coins, LayoutDashboard, LogOut, Shield,
+  ScrollText, Users, Wallet, ArrowLeftRight,
 } from 'lucide-react';
 
 type AdminTab = 'overview' | 'users' | 'accounts' | 'deposits' | 'crypto' | 'transactions' | 'audit' | 'activity';
@@ -31,11 +31,13 @@ export default function AdminLayout({ activeTab, onTabChange, children }: AdminL
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  const signOut = () => { logout(); navigate('/admin/login'); };
+  const signOut = () => {
+    logout();
+    navigate('/admin/login');
+  };
 
   return (
     <div className="min-h-screen bg-surface flex">
-      {/* ── Sidebar ── */}
       {sidebarOpen && (
         <div className="fixed inset-0 bg-black/50 z-40 lg:hidden" onClick={() => setSidebarOpen(false)} />
       )}
@@ -44,7 +46,6 @@ export default function AdminLayout({ activeTab, onTabChange, children }: AdminL
         'transform transition-transform duration-200 lg:transform-none lg:static lg:z-auto',
         sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
       )}>
-        {/* Logo */}
         <div className="h-16 flex items-center gap-3 px-5 border-b border-line-subtle shrink-0">
           <span className="w-9 h-9 rounded-control bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center font-bold text-surface text-base shadow-amber">R</span>
           <div>
@@ -53,7 +54,6 @@ export default function AdminLayout({ activeTab, onTabChange, children }: AdminL
           </div>
         </div>
 
-        {/* Navigation */}
         <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
           {NAV_ITEMS.map(({ id, label, icon: Icon }) => (
             <button key={id} type="button" onClick={() => { onTabChange(id); setSidebarOpen(false); }}
@@ -70,11 +70,8 @@ export default function AdminLayout({ activeTab, onTabChange, children }: AdminL
           ))}
         </nav>
 
-        {/* Footer */}
         <div className="p-4 border-t border-line-subtle space-y-3 shrink-0">
-          <Link to="/dashboard" className="flex items-center gap-2 text-caption text-content-muted hover:text-content-primary transition-colors">
-            <ArrowLeftRight className="w-3.5 h-3.5" /> Back to banking
-          </Link>
+          <p className="text-micro text-content-muted px-1">Owner access only · not linked to customer banking session</p>
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
               {admin?.full_name?.split(/\s+/).map(w => w[0]).join('').toUpperCase().slice(0, 2) || 'O'}
@@ -90,9 +87,7 @@ export default function AdminLayout({ activeTab, onTabChange, children }: AdminL
         </div>
       </aside>
 
-      {/* ── Main Content ── */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Top bar */}
         <header className="h-16 bg-surface-raised/50 border-b border-line-subtle flex items-center justify-between px-4 lg:px-6 shrink-0">
           <div className="flex items-center gap-3">
             <button onClick={() => setSidebarOpen(true)} className="lg:hidden text-content-secondary hover:text-content-primary p-2 -ml-2">
@@ -107,7 +102,6 @@ export default function AdminLayout({ activeTab, onTabChange, children }: AdminL
           </div>
         </header>
 
-        {/* Content */}
         <main className="flex-1 overflow-y-auto p-4 lg:p-6">
           {children}
         </main>
