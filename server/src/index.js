@@ -129,6 +129,48 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
   }
 });
 
+// ============== ADMIN AUTH (separate from customer auth) ==============
+
+app.post('/api/admin/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const adminEmail = (process.env.ADMIN_EMAIL || '').toLowerCase();
+    const adminPassword = process.env.ADMIN_PASSWORD || '';
+
+    if (!adminEmail || !adminPassword) {
+      return res.status(500).json({ error: 'Admin credentials not configured on server' });
+    }
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password required' });
+    }
+    if (email.toLowerCase() !== adminEmail) {
+      return res.status(401).json({ error: 'Invalid admin credentials' });
+    }
+    if (password !== adminPassword) {
+      return res.status(401).json({ error: 'Invalid admin credentials' });
+    }
+
+    const token = signToken({ id: 'admin-owner', email: adminEmail, role: 'admin' });
+    res.json({
+      token,
+      user: { id: 'admin-owner', email: adminEmail, role: 'admin', full_name: 'Owner' }
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Admin login failed' });
+  }
+});
+
+app.get('/api/admin/me', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    res.json({
+      user: { id: req.user.id || 'admin-owner', email: req.user.email, role: 'admin', full_name: 'Owner' }
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to verify admin session' });
+  }
+});
+
 // ============== CUSTOMER ACCOUNTS ==============
 
 app.get('/api/accounts', authMiddleware, async (req, res) => {

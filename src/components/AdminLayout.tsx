@@ -1,11 +1,10 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
+import { useAdminAuth } from '../context/AdminAuthContext';
 import { cx } from '../lib/designTokens';
-import { Button } from './ui';
 import {
-  Activity, ClipboardList, Coins, LayoutDashboard, LogOut, Shield,
-  Users, Wallet, ScrollText, Settings, ArrowLeftRight,
+  Activity, ArrowLeftRight, ClipboardList, Coins, LayoutDashboard, LogOut, Shield,
+  ScrollText, Users, Wallet,
 } from 'lucide-react';
 
 type AdminTab = 'overview' | 'users' | 'accounts' | 'deposits' | 'crypto' | 'transactions' | 'audit' | 'activity';
@@ -28,11 +27,11 @@ interface AdminLayoutProps {
 }
 
 export default function AdminLayout({ activeTab, onTabChange, children }: AdminLayoutProps) {
-  const { user, logout } = useAuth();
+  const { admin, logout } = useAdminAuth();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  const signOut = () => { logout(); navigate('/'); };
+  const signOut = () => { logout(); navigate('/admin/login'); };
 
   return (
     <div className="min-h-screen bg-surface flex">
@@ -78,11 +77,11 @@ export default function AdminLayout({ activeTab, onTabChange, children }: AdminL
           </Link>
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
-              {user?.full_name?.split(/\s+/).map(w => w[0]).join('').toUpperCase().slice(0, 2) || '?'}
+              {admin?.full_name?.split(/\s+/).map(w => w[0]).join('').toUpperCase().slice(0, 2) || 'O'}
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">{user?.full_name}</p>
-              <p className="text-micro text-content-muted truncate">{user?.email}</p>
+              <p className="text-sm font-medium truncate">{admin?.full_name || 'Owner'}</p>
+              <p className="text-micro text-content-muted truncate">{admin?.email}</p>
             </div>
             <button onClick={signOut} className="text-content-muted hover:text-red-400 transition-colors" title="Sign out">
               <LogOut className="w-4 h-4" />
