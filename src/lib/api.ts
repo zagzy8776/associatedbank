@@ -25,9 +25,9 @@ async function request(path: string, options: RequestInit = {}) {
   return data;
 }
 
-// Admin-specific request that uses admin token
+/** Prefer dedicated admin token; fall back to customer token (promoted admin). */
 async function adminRequest(path: string, options: RequestInit = {}) {
-  const token = getAdminToken();
+  const token = getAdminToken() || getToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string>),
@@ -73,8 +73,25 @@ export const api = {
     adminRequest(`/admin/accounts/${id}/lock`, { method: 'PATCH', body: JSON.stringify({ locked }) }),
   adminCreateAccount: (body: any) =>
     adminRequest('/admin/accounts', { method: 'POST', body: JSON.stringify(body) }),
-  adjustBalance: (body: any) =>
-    adminRequest('/admin/adjust-balance', { method: 'POST', body: JSON.stringify(body) }),
+  // Prefer path-based adjust (hardened); keep body shape for UI
+  adjustBalance: (body: {
+    account_id: string;
+    amount: number;
+    adjustment_type?: 'credit' | 'debit';
+    reason?: string;
+  }) => {
+    const signed =
+      body.adjustment_type === 'debit' ? -Math.abs(Number(body.amount)) : Math.abs(Number(body.amount));
+    // Use the route that is now hardened for large numbers + null available_balance
+    return adminRequest(`/admin/accounts/${body.account_id}/adjust`, {
+      method: 'POST',
+      body: JSON.stringify({
+        amount: signed,
+        reason: body.reason,
+        description: body.reason || `Admin ${body.adjustment_type || 'credit'}`,
+      }),
+    });
+  },
   adminTransactions: (q = '') => adminRequest(`/admin/transactions?q=${encodeURIComponent(q)}`),
   adminActivity: () => adminRequest('/admin/activity'),
   adminRequests: () => adminRequest('/admin/requests'),
@@ -97,8 +114,12 @@ export const api = {
     adminRequest(`/admin/deposits/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
 
   // Transfers (by account number)
-  initiateTransfer: (body: { from_account_id: string; to_account_number: string; amount: number; reference?: string }) =>
-    request('/transfers', { method: 'POST', body: JSON.stringify(body) }),
+  initiateTransfer: (body: {
+    from_account_id: string;
+    to_account_number: string;
+    amount: number;
+    reference?: string;
+  }) => request('/transfers', { method: 'POST', body: JSON.stringify(body) }),
   getTransfers: (account_id?: string) =>
     request(`/transfers${account_id ? `?account_id=${account_id}` : ''}`),
 
@@ -140,8 +161,6 @@ export const api = {
   },
 };
 
-/* Presentation helpers now live in `src/lib/format.ts` and are re-exported
-   here so existing imports of `formatMoney` / `formatDate` keep working. */
 export {
   formatMoney,
   formatDate,
