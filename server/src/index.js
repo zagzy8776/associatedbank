@@ -8,6 +8,12 @@ import {
   signToken, hashPassword, comparePassword,
   authMiddleware, adminMiddleware, getProfile
 } from './auth.js';
+import { runMigrations } from './migrations.js';
+import depositRoutes from './routes/deposits.js';
+import transferRoutes from './routes/transfers.js';
+import cryptoRoutes from './routes/crypto.js';
+import notificationRoutes from './routes/notifications.js';
+import adminRoutes from './routes/admin.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '../../.env') });
@@ -17,6 +23,13 @@ const PORT = process.env.PORT || 4000;
 
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
+
+// Register new route modules
+app.use(depositRoutes);
+app.use(transferRoutes);
+app.use(cryptoRoutes);
+app.use(notificationRoutes);
+app.use(adminRoutes);
 
 // ============== AUTH ==============
 
@@ -36,11 +49,13 @@ app.post('/api/auth/register', async (req, res) => {
     }
 
     const password_hash = await hashPassword(password);
+    const OWNER_EMAIL = (process.env.OWNER_EMAIL || '').toLowerCase();
+    const role = email.toLowerCase() === OWNER_EMAIL ? 'admin' : 'user';
     const { rows } = await query(
       `INSERT INTO profiles (email, password_hash, full_name, role)
-       VALUES ($1, $2, $3, 'user')
+       VALUES ($1, $2, $3, $4)
        RETURNING id, email, full_name, role, created_at`,
-      [email.toLowerCase(), password_hash, full_name]
+      [email.toLowerCase(), password_hash, full_name, role]
     );
 
     const user = rows[0];
@@ -131,6 +146,15 @@ app.post('/api/accounts', authMiddleware, async (req, res) => {
     const { currency, account_name } = req.body;
     if (!['GBP', 'USD', 'EUR'].includes(currency)) {
       return res.status(400).json({ error: 'Invalid currency' });
+    }
+
+    // One account per currency per customer
+    const existing = await query(
+      `SELECT id FROM accounts WHERE user_id = $1 AND currency = $2`,
+      [req.user.id, currency]
+    );
+    if (existing.rows.length) {
+      return res.status(409).json({ error: `You already have a ${currency} account` });
     }
 
     const { rows } = await query(
@@ -475,6 +499,15 @@ app.post('/api/admin/accounts', authMiddleware, adminMiddleware, async (req, res
       return res.status(400).json({ error: 'user_id and valid currency required' });
     }
 
+    // One account per currency per customer
+    const existing = await query(
+      `SELECT id FROM accounts WHERE user_id = $1 AND currency = $2`,
+      [user_id, currency]
+    );
+    if (existing.rows.length) {
+      return res.status(409).json({ error: `Customer already has a ${currency} account` });
+    }
+
     const deposit = parseFloat(initial_deposit) || 0;
 
     const result = await withTransaction(async (client) => {
@@ -515,19 +548,40 @@ app.post('/api/admin/adjust-balance', authMiddleware, adminMiddleware, async (re
     const amt = parseFloat(amount);
 
     if (!account_id || !amt || amt <= 0 || !['credit', 'debit'].includes(adjustment_type)) {
-      return res.status(400).json({ error: 'Invalid adjustment data' });
+      return res.status(400).json({ error: 'Invalid adjustment data. Provide account_id, amount > 0, and adjustment_type (credit/debit).' });
     }
 
-    // Set session vars for the DB function
-    await query(`SELECT set_config('app.current_user_id', $1, true)`, [req.user.id]);
-    await query(`SELECT set_config('app.current_user_role', 'admin', true)`);
+    const result = await withTransaction(async (client) => {
+      const acct = (await client.query(`SELECT * FROM accounts WHERE id=$1 FOR UPDATE`, [account_id])).rows[0];
+      if (!acct) throw new Error('Account not found');
 
-    const { rows } = await query(
-      `SELECT admin_adjust_balance($1, $2, $3, $4) as tx_id`,
-      [account_id, amt, adjustment_type, reason || 'Admin adjustment']
-    );
+      const delta = adjustment_type === 'credit' ? amt : -amt;
+      const newBalance = parseFloat(acct.balance) + delta;
+      if (newBalance < 0) throw new Error('Resulting balance cannot be negative');
 
-    res.json({ success: true, transaction_id: rows[0].tx_id });
+      await client.query(
+        `UPDATE accounts SET balance=$1, available_balance=available_balance+$2 WHERE id=$3`,
+        [newBalance, delta, account_id]
+      );
+
+      const tx = await client.query(
+        `INSERT INTO transactions (account_id, type, amount, currency, description, reference, status, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'completed', now()) RETURNING *`,
+        [account_id, `admin_${adjustment_type}`, delta, acct.currency,
+         reason || `Admin ${adjustment_type}`, `ADJ-${Date.now().toString(36).toUpperCase()}`]
+      );
+
+      await createNotification(acct.user_id, `balance_${adjustment_type}`, `Balance ${adjustment_type === 'credit' ? 'credited' : 'debited'}`,
+        `$${amt.toFixed(2)} ${acct.currency} ${adjustment_type === 'credit' ? 'added to' : 'removed from'} your account.`,
+        { account_id: acct.id, amount: delta, reason });
+
+      await createAuditLog(req.user.id, 'balance_adjust', 'account', acct.id,
+        { balance: acct.balance }, { balance: newBalance }, reason, req.ip);
+
+      return { newBalance, transaction: tx.rows[0] };
+    });
+
+    res.json({ success: true, ...result });
   } catch (err) {
     res.status(400).json({ error: err.message || 'Adjustment failed' });
   }
@@ -661,18 +715,18 @@ app.put('/api/admin/exchange-rates', authMiddleware, adminMiddleware, async (req
   }
 });
 
-// Promote user to admin (one-time helper, protect in production)
+// Promote user to admin — owner-only, locked to OWNER_EMAIL
 app.post('/api/admin/promote', authMiddleware, async (req, res) => {
   try {
-    // Only allow if no admins exist yet, or current user is already admin
-    const { rows: admins } = await query(`SELECT COUNT(*) as c FROM profiles WHERE role = 'admin'`);
-    if (parseInt(admins[0].c) > 0 && req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Not allowed' });
+    const OWNER_EMAIL = (process.env.OWNER_EMAIL || '').toLowerCase();
+    const targetEmail = ((req.body && req.body.email) || req.user.email).toLowerCase();
+
+    if (targetEmail !== OWNER_EMAIL) {
+      return res.status(403).json({ error: 'Only the platform owner can be promoted to admin' });
     }
 
-    const email = (req.body && req.body.email) || req.user.email;
-    await query(`UPDATE profiles SET role = 'admin' WHERE email = $1`, [email.toLowerCase()]);
-    res.json({ success: true, message: `${email} is now admin` });
+    await query(`UPDATE profiles SET role = 'admin' WHERE email = $1`, [targetEmail]);
+    res.json({ success: true, message: `${targetEmail} is now admin` });
   } catch (err) {
     res.status(500).json({ error: 'Failed to promote' });
   }
@@ -681,6 +735,12 @@ app.post('/api/admin/promote', authMiddleware, async (req, res) => {
 // Health
 app.get('/api/health', (req, res) => res.json({ status: 'ok', bank: 'Rubicon Capital' }));
 
-app.listen(PORT, () => {
-  console.log(`Rubicon Capital API running on http://localhost:${PORT}`);
+// Run migrations then start server
+runMigrations().then(() => {
+  app.listen(PORT, () => {
+    console.log(`Rubicon Capital API running on http://localhost:${PORT}`);
+  });
+}).catch(err => {
+  console.error('Migration failed:', err);
+  process.exit(1);
 });

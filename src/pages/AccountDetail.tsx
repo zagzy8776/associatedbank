@@ -1,61 +1,157 @@
-import { useEffect, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import { api, formatMoney, formatDate } from '../lib/api';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { api, formatMoney } from '../lib/api';
+import { currencyMeta } from '../lib/currencies';
+import { formatDate, maskAccountNumber, maskBalance, titleCase } from '../lib/format';
+import { validateAmount } from '../lib/validation';
+import { useBalanceVisibility } from '../hooks/useBalanceVisibility';
 import {
-  ArrowLeft, ArrowUpRight, ArrowDownLeft, Loader2,
-  ArrowRightLeft, Plus, Minus
+  Alert, Badge, Button, Card, EmptyState, ErrorState, IconButton, Input, LoadingState,
+  Modal, PageHeader, SectionHeading, Select, SkipLink, StatusBadge,
+} from '../components/ui';
+import {
+  ArrowDownLeft, ArrowRightLeft, ArrowUpRight, CheckCircle2, Eye, EyeOff,
+  Minus, Plus, Receipt,
 } from 'lucide-react';
+
+type ActionKind = 'deposit' | 'withdraw' | 'transfer';
+
+interface Account {
+  id: string;
+  account_number: string;
+  account_name: string;
+  currency: string;
+  balance: string;
+  status: string;
+  is_locked: boolean;
+}
+
+interface Transaction {
+  id: string;
+  type: string;
+  amount: string;
+  currency: string;
+  description?: string;
+  reference?: string;
+  status?: string;
+  created_at: string;
+}
+
+const ACTION_COPY: Record<ActionKind, { title: string; description: string; cta: string }> = {
+  deposit: { title: 'Deposit funds', description: 'Add money to this account.', cta: 'Confirm deposit' },
+  withdraw: { title: 'Withdraw funds', description: 'Move money out of this account.', cta: 'Confirm withdrawal' },
+  transfer: {
+    title: 'Transfer funds',
+    description: 'Move money to another account holding the same currency.',
+    cta: 'Confirm transfer',
+  },
+};
+
+/** Deposits credit the account; withdrawals and outgoing transfers debit it. */
+function isCredit(type: string) {
+  return type === 'deposit';
+}
 
 export default function AccountDetail() {
   const { id } = useParams<{ id: string }>();
-  const [account, setAccount] = useState<any>(null);
-  const [txs, setTxs] = useState<any[]>([]);
+  const navigate = useNavigate();
+
+  const [account, setAccount] = useState<Account | null>(null);
+  const [txs, setTxs] = useState<Transaction[]>([]);
+  const [allAccounts, setAllAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
-  const [modal, setModal] = useState<'deposit' | 'withdraw' | 'transfer' | null>(null);
+  const [loadError, setLoadError] = useState('');
+
+  const [modal, setModal] = useState<ActionKind | null>(null);
   const [amount, setAmount] = useState('');
   const [toAccount, setToAccount] = useState('');
   const [desc, setDesc] = useState('');
-  const [allAccounts, setAllAccounts] = useState<any[]>([]);
+  const [amountError, setAmountError] = useState<string | undefined>();
+  const [formError, setFormError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
 
-  const load = async () => {
+  const { hideBalances, toggle } = useBalanceVisibility();
+
+  const load = useCallback(async () => {
+    setLoadError('');
     try {
-      const [a, t, all] = await Promise.all([
+      const [accountRes, txRes, accountsRes] = await Promise.all([
         api.getAccount(id!),
         api.getTransactions(id!),
         api.getAccounts(),
       ]);
-      setAccount(a.account);
-      setTxs(t.transactions);
-      setAllAccounts(all.accounts.filter((x: any) => x.id !== id));
+      setAccount(accountRes.account);
+      setTxs(txRes.transactions ?? []);
+      setAllAccounts((accountsRes.accounts ?? []).filter((a: Account) => a.id !== id));
     } catch (e: any) {
-      setError(e.message);
+      setLoadError(e?.message || 'We could not load this account.');
     } finally {
       setLoading(false);
     }
+  }, [id]);
+
+  useEffect(() => {
+    setLoading(true);
+    load();
+  }, [load]);
+
+  const meta = currencyMeta(account?.currency);
+  const balanceValue = parseFloat(account?.balance ?? '0');
+
+  /* Same-currency destinations only — transfers never convert (Req 3.1). */
+  const transferTargets = useMemo(
+    () => allAccounts.filter((a) => a.currency === account?.currency && !a.is_locked),
+    [allAccounts, account?.currency],
+  );
+
+  const openModal = (kind: ActionKind) => {
+    setModal(kind);
+    setAmount('');
+    setDesc('');
+    setToAccount('');
+    setAmountError(undefined);
+    setFormError('');
   };
 
-  useEffect(() => { load(); }, [id]);
+  const closeModal = () => {
+    setModal(null);
+    setFormError('');
+    setAmountError(undefined);
+  };
+const submit = async () => {
+    if (!modal) return;
+    const max = modal === 'deposit' ? undefined : balanceValue;
+    const nextAmountError = validateAmount(amount, account?.currency, max);
+    setAmountError(nextAmountError);
+    if (nextAmountError) return;
+    if (modal === 'transfer' && !toAccount) {
+      setFormError('Choose the account you want to transfer to.');
+      return;
+    }
 
-  const submit = async () => {
     setBusy(true);
-    setError('');
+    setFormError('');
     try {
       if (modal === 'deposit') {
         await api.deposit({ account_id: id, amount, description: desc });
       } else if (modal === 'withdraw') {
         await api.withdraw({ account_id: id, amount, description: desc });
-      } else if (modal === 'transfer') {
+      } else {
         await api.transfer({ from_account_id: id, to_account_id: toAccount, amount, description: desc });
       }
-      setModal(null);
-      setAmount('');
-      setDesc('');
-      setToAccount('');
+      const formatted = formatMoney(amount, account?.currency);
+      setSuccess(
+        modal === 'deposit'
+          ? `${formatted} added to this account.`
+          : modal === 'withdraw'
+            ? `${formatted} withdrawn from this account.`
+            : `${formatted} transferred successfully.`,
+      );
+      closeModal();
       await load();
     } catch (e: any) {
-      setError(e.message);
+      setFormError(e?.message || 'That request could not be completed.');
     } finally {
       setBusy(false);
     }
@@ -63,179 +159,312 @@ export default function AccountDetail() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
-        <Loader2 className="w-8 h-8 text-amber-400 animate-spin" />
+      <div className="min-h-screen bg-surface">
+        <SkipLink />
+        <main id="main-content" className="w-full max-w-4xl mx-auto px-4 sm:px-6 pt-16">
+          <LoadingState label="Loading your account…" />
+        </main>
       </div>
     );
   }
 
   if (!account) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-400">
-        Account not found
+      <div className="min-h-screen bg-surface">
+        <SkipLink />
+        <main id="main-content" className="w-full max-w-4xl mx-auto px-4 sm:px-6 py-16">
+          <ErrorState
+            title="Account unavailable"
+            message={loadError || 'This account could not be found, or you no longer have access to it.'}
+            onRetry={load}
+            hint="Return to your dashboard to see every account you hold."
+          />
+          <div className="mt-6 text-center">
+            <Button variant="secondary" onClick={() => navigate('/dashboard')}>
+              Back to dashboard
+            </Button>
+          </div>
+        </main>
       </div>
     );
   }
+return (
+    <div className="min-h-screen bg-surface pb-16">
+      <SkipLink />
 
-  return (
-    <div className="min-h-screen bg-slate-950">
-      <header className="border-b border-slate-800/80 sticky top-0 bg-slate-950/90 backdrop-blur z-40">
-        <div className="max-w-4xl mx-auto px-6 h-16 flex items-center gap-4">
-          <Link to="/dashboard" className="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-slate-800">
-            <ArrowLeft className="w-5 h-5" />
-          </Link>
-          <div>
-            <div className="font-medium">{account.account_name || `${account.currency} Account`}</div>
-            <div className="text-xs text-slate-500 font-mono">{account.account_number}</div>
-          </div>
-        </div>
-      </header>
+      <PageHeader
+        title={titleCase(account.account_name || `${account.currency} Account`)}
+        subtitle={
+          <span className="flex items-center gap-2">
+            <span className="font-mono">{maskAccountNumber(account.account_number)}</span>
+            <Badge tone="neutral">{account.currency}</Badge>
+          </span>
+        }
+        backTo="/dashboard"
+        backLabel="Back to dashboard"
+        breadcrumbs={[
+          { label: 'Dashboard', to: '/dashboard' },
+          { label: titleCase(account.account_name || `${account.currency} Account`) },
+        ]}
+        actions={
+          <IconButton
+            label={hideBalances ? 'Show balance' : 'Hide balance'}
+            aria-pressed={hideBalances}
+            onClick={toggle}
+          >
+            {hideBalances ? <Eye className="w-5 h-5" /> : <EyeOff className="w-5 h-5" />}
+          </IconButton>
+        }
+      />
 
-      <main className="max-w-4xl mx-auto px-6 py-10">
-        <div className="bg-gradient-to-br from-slate-900 to-slate-900/40 border border-slate-800 rounded-2xl p-8 mb-8">
-          <div className="text-sm text-slate-400 mb-1">Available balance</div>
-          <div className="text-4xl font-semibold tracking-tight mb-6">
-            {formatMoney(account.balance, account.currency)}
-          </div>
-          {account.is_locked && (
-            <div className="text-red-400 text-sm mb-4">This account is locked by admin</div>
-          )}
-          <div className="flex flex-wrap gap-3">
-            <button
-              onClick={() => setModal('deposit')}
-              disabled={account.is_locked}
-              className="flex items-center gap-2 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-600/30 px-4 py-2.5 rounded-xl text-sm font-medium transition disabled:opacity-40"
-            >
-              <Plus className="w-4 h-4" /> Deposit
-            </button>
-            <button
-              onClick={() => setModal('withdraw')}
-              disabled={account.is_locked}
-              className="flex items-center gap-2 bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-600/30 px-4 py-2.5 rounded-xl text-sm font-medium transition disabled:opacity-40"
-            >
-              <Minus className="w-4 h-4" /> Withdraw
-            </button>
-            <button
-              onClick={() => setModal('transfer')}
-              disabled={account.is_locked}
-              className="flex items-center gap-2 bg-amber-600/20 hover:bg-amber-600/30 text-amber-400 border border-amber-600/30 px-4 py-2.5 rounded-xl text-sm font-medium transition disabled:opacity-40"
-            >
-              <ArrowRightLeft className="w-4 h-4" /> Transfer
-            </button>
-          </div>
-        </div>
+      <main id="main-content" className="w-full max-w-4xl mx-auto px-4 sm:px-6 md:px-8 pt-6 sm:pt-8">
+        {success && (
+          <Alert tone="success" title="Done" onDismiss={() => setSuccess('')}>
+            <span className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" aria-hidden="true" />
+              {success}
+            </span>
+          </Alert>
+        )}
 
-        <h2 className="text-lg font-medium mb-4">Recent activity</h2>
-        {txs.length === 0 ? (
-          <div className="text-slate-500 text-sm py-10 text-center border border-dashed border-slate-800 rounded-2xl">
-            No transactions yet
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {txs.map((t) => (
-              <div
-                key={t.id}
-                className="flex items-center justify-between bg-slate-900/50 border border-slate-800/80 rounded-xl px-4 py-3"
-              >
-                <div className="flex items-center gap-3">
-                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${
-                    t.type === 'deposit' ? 'bg-emerald-500/15 text-emerald-400' :
-                    t.type === 'withdrawal' ? 'bg-red-500/15 text-red-400' :
-                    'bg-amber-500/15 text-amber-400'
-                  }`}>
-                    {t.type === 'deposit' ? <ArrowDownLeft className="w-4 h-4" /> :
-                     t.type === 'withdrawal' ? <ArrowUpRight className="w-4 h-4" /> :
-                     <ArrowRightLeft className="w-4 h-4" />}
-                  </div>
-                  <div>
-                    <div className="text-sm font-medium capitalize">{t.type}</div>
-                    <div className="text-xs text-slate-500">{t.description || t.reference}</div>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className={`font-medium text-sm ${
-                    t.type === 'deposit' ? 'text-emerald-400' : t.type === 'withdrawal' ? 'text-red-400' : ''
-                  }`}>
-                    {t.type === 'deposit' ? '+' : t.type === 'withdrawal' ? '−' : ''}
-                    {formatMoney(t.amount, t.currency)}
-                  </div>
-                  <div className="text-xs text-slate-500">{formatDate(t.created_at)}</div>
+        {loadError && (
+          <Alert tone="error" title="We could not refresh this account" onDismiss={() => setLoadError('')}>
+            {loadError}
+          </Alert>
+        )}
+
+        <Card className="relative overflow-hidden p-5 sm:p-8 mb-8">
+          <div
+            className="absolute inset-0 bg-[radial-gradient(circle_at_15%_20%,_rgba(245,158,11,0.10),transparent_55%)]"
+            aria-hidden="true"
+          />
+          <div className="relative">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <span
+                  className="w-12 h-12 rounded-card bg-surface-overlay/70 flex items-center justify-center text-xl shadow-card"
+                  aria-hidden="true"
+                >
+                  {meta.flag}
+                </span>
+                <div>
+                  <p className="text-label text-content-secondary">{meta.label}</p>
+                  <p className="text-caption text-content-muted">Available balance</p>
                 </div>
               </div>
-            ))}
+              <StatusBadge status={account.status} locked={account.is_locked} />
+            </div>
+
+            <p className="mt-6 text-4xl sm:text-5xl font-bold tracking-tight tabular-nums">
+              {maskBalance(formatMoney(account.balance, account.currency), hideBalances)}
+            </p>
+
+            {account.is_locked && (
+              <p className="mt-4 text-sm text-red-400">
+                This account is locked, so deposits, withdrawals and transfers are unavailable.
+                Contact client services to unlock it.
+              </p>
+            )}
+
+            <div className="mt-7 flex flex-wrap gap-3">
+              <Button
+                variant="success"
+                onClick={() => openModal('deposit')}
+                disabled={account.is_locked}
+                leftIcon={<Plus className="w-4 h-4" />}
+              >
+                Deposit
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => openModal('withdraw')}
+                disabled={account.is_locked}
+                leftIcon={<Minus className="w-4 h-4" />}
+                className="text-red-300 border-red-500/30 hover:border-red-500/50"
+              >
+                Withdraw
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => openModal('transfer')}
+                disabled={account.is_locked || transferTargets.length === 0}
+                leftIcon={<ArrowRightLeft className="w-4 h-4" />}
+              >
+                Transfer
+              </Button>
+            </div>
+
+            {transferTargets.length === 0 && !account.is_locked && (
+              <p className="mt-3 text-caption text-content-muted">
+                Open a second {account.currency} account to transfer between accounts you own.
+              </p>
+            )}
           </div>
-        )}
+        </Card>
+<section className="mt-10" aria-labelledby="activity-heading">
+          <SectionHeading
+            id="activity-heading"
+            title="Recent activity"
+            icon={Receipt}
+            action={
+              txs.length > 0 ? (
+                <span className="text-caption text-content-muted">
+                  {txs.length} transaction{txs.length === 1 ? '' : 's'}
+                </span>
+              ) : undefined
+            }
+          />
+
+          {txs.length === 0 ? (
+            <EmptyState
+              icon={Receipt}
+              title="No transactions yet"
+              description={`Money moving in or out of this ${account.currency} account will appear here, newest first.`}
+              action={
+                <Button
+                  onClick={() => openModal('deposit')}
+                  disabled={account.is_locked}
+                  leftIcon={<Plus className="w-4 h-4" />}
+                >
+                  Make a deposit
+                </Button>
+              }
+              hint="Every deposit, withdrawal and transfer for this account is listed here."
+            />
+          ) : (
+            <ul className="space-y-3">
+              {txs.map((t) => (
+                <TransactionRow key={t.id} tx={t} hidden={hideBalances} />
+              ))}
+            </ul>
+          )}
+        </section>
       </main>
 
-      {/* Action modal */}
-      {modal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-6">
-            <h3 className="text-lg font-semibold mb-5 capitalize">{modal}</h3>
-            {error && (
-              <div className="mb-4 bg-red-500/10 border border-red-500/30 text-red-400 text-sm rounded-xl px-4 py-3">
-                {error}
-              </div>
-            )}
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm text-slate-400 mb-1.5">Amount ({account.currency})</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 focus:outline-none focus:border-amber-500/60"
-                  placeholder="0.00"
-                />
-              </div>
-              {modal === 'transfer' && (
-                <div>
-                  <label className="block text-sm text-slate-400 mb-1.5">To account</label>
-                  <select
-                    value={toAccount}
-                    onChange={(e) => setToAccount(e.target.value)}
-                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 focus:outline-none focus:border-amber-500/60"
-                  >
-                    <option value="">Select account</option>
-                    {allAccounts.filter(a => a.currency === account.currency).map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.account_name || a.currency} — {a.account_number}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-              <div>
-                <label className="block text-sm text-slate-400 mb-1.5">Description (optional)</label>
-                <input
-                  value={desc}
-                  onChange={(e) => setDesc(e.target.value)}
-                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 focus:outline-none focus:border-amber-500/60"
-                  placeholder="Note"
-                />
-              </div>
-            </div>
-            <div className="flex gap-3 mt-6">
-              <button
-                onClick={() => { setModal(null); setError(''); }}
-                className="flex-1 border border-slate-700 py-2.5 rounded-xl text-sm"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={submit}
-                disabled={busy || !amount || (modal === 'transfer' && !toAccount)}
-                className="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-medium py-2.5 rounded-xl text-sm flex items-center justify-center gap-2 disabled:opacity-50"
-              >
-                {busy && <Loader2 className="w-4 h-4 animate-spin" />}
-                Confirm
-              </button>
-            </div>
-          </div>
+      <Modal
+        open={modal !== null}
+        onClose={closeModal}
+        title={modal ? ACTION_COPY[modal].title : ''}
+        description={modal ? ACTION_COPY[modal].description : undefined}
+        footer={
+          <>
+            <Button variant="secondary" fullWidth onClick={closeModal} disabled={busy}>
+              Cancel
+            </Button>
+            <Button fullWidth onClick={submit} loading={busy} loadingLabel="Processing…">
+              {modal ? ACTION_COPY[modal].cta : 'Confirm'}
+            </Button>
+          </>
+        }
+      >
+        {formError && (
+          <Alert tone="error" onDismiss={() => setFormError('')}>
+            {formError}
+          </Alert>
+        )}
+
+        <div className="space-y-5">
+          <Input
+            label={`Amount (${account.currency})`}
+            required
+            type="number"
+            inputMode="decimal"
+            step="0.01"
+            min="0.01"
+            value={amount}
+            onChange={(e) => {
+              setAmount(e.target.value);
+              if (amountError) {
+                setAmountError(
+                  validateAmount(e.target.value, account.currency, modal === 'deposit' ? undefined : balanceValue),
+                );
+              }
+            }}
+            onBlur={() =>
+              setAmountError(validateAmount(amount, account.currency, modal === 'deposit' ? undefined : balanceValue))
+            }
+            error={amountError}
+            placeholder="0.00"
+            hint={
+              modal === 'deposit'
+                ? 'Deposits are credited immediately.'
+                : `Available to use: ${maskBalance(formatMoney(account.balance, account.currency), hideBalances)}`
+            }
+            leadingIcon={<span className="text-sm font-medium">{meta.symbol}</span>}
+          />
+
+          {modal === 'transfer' && (
+            <Select label="To account" required value={toAccount} onChange={(e) => setToAccount(e.target.value)}>
+              <option value="">Select an account</option>
+              {transferTargets.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {titleCase(a.account_name || `${a.currency} Account`)} — {maskAccountNumber(a.account_number)}
+                </option>
+              ))}
+            </Select>
+          )}
+
+          <Input
+            label="Description (optional)"
+            value={desc}
+            onChange={(e) => setDesc(e.target.value)}
+            placeholder="Reference for your records"
+            maxLength={120}
+          />
         </div>
-      )}
+      </Modal>
     </div>
+  );
+}
+/** Single transaction row with direction-aware iconography and colouring. */
+function TransactionRow({ tx, hidden }: { tx: Transaction; hidden: boolean }) {
+  const credit = isCredit(tx.type);
+  const isWithdrawal = tx.type === 'withdrawal';
+  const Icon = credit ? ArrowDownLeft : isWithdrawal ? ArrowUpRight : ArrowRightLeft;
+  const label = isWithdrawal ? 'Withdrawal' : tx.type === 'transfer' ? 'Transfer' : 'Deposit';
+
+  return (
+    <li className="flex items-center justify-between gap-4 rounded-card border border-line-subtle bg-surface-raised/40 px-4 py-3.5 transition-colors duration-base hover:border-line-strong hover:bg-surface-raised/60">
+      <div className="flex items-center gap-3.5 min-w-0">
+        <span
+          className={
+            'w-10 h-10 rounded-control flex items-center justify-center shrink-0 ' +
+            (credit
+              ? 'bg-emerald-500/15 text-emerald-400'
+              : isWithdrawal
+                ? 'bg-red-500/15 text-red-400'
+                : 'bg-brand-500/15 text-brand-400')
+          }
+          aria-hidden="true"
+        >
+          <Icon className="w-4 h-4" />
+        </span>
+        <div className="min-w-0">
+          <p className="text-sm font-medium">{label}</p>
+          <p className="text-caption text-content-muted truncate">
+            {tx.description || tx.reference || 'No description'}
+          </p>
+          <p className="text-micro text-content-muted mt-0.5">{formatDate(tx.created_at)}</p>
+        </div>
+      </div>
+
+      <div className="text-right shrink-0">
+        <p
+          className={
+            'text-sm font-semibold tabular-nums ' +
+            (credit ? 'text-emerald-400' : isWithdrawal ? 'text-red-400' : 'text-content-primary')
+          }
+        >
+          <span aria-hidden="true">{credit ? '+' : '−'}</span>
+          <span className="sr-only">{credit ? 'credit of ' : 'debit of '}</span>
+          {maskBalance(formatMoney(tx.amount, tx.currency), hidden)}
+        </p>
+        {tx.status && tx.status !== 'completed' && (
+          <span className="mt-1 inline-block">
+            <StatusBadge status={tx.status} />
+          </span>
+        )}
+      </div>
+    </li>
   );
 }

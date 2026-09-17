@@ -63,23 +63,73 @@ export const api = {
     request('/admin/exchange-rates', { method: 'PUT', body: JSON.stringify(body) }),
   promote: (email?: string) =>
     request('/admin/promote', { method: 'POST', body: JSON.stringify({ email }) }),
+
+  // Deposit requests (customer)
+  createDepositRequest: (body: { account_id: string; amount: number; reference?: string }) =>
+    request('/deposits', { method: 'POST', body: JSON.stringify(body) }),
+  getMyDeposits: () => request('/deposits'),
+
+  // Admin deposit management
+  adminDeposits: (status = 'all') => request(`/admin/deposits?status=${status}`),
+  reviewDeposit: (id: string, body: { status: string; admin_note?: string }) =>
+    request(`/admin/deposits/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+
+  // Transfers (by account number)
+  initiateTransfer: (body: { from_account_id: string; to_account_number: string; amount: number; reference?: string }) =>
+    request('/transfers', { method: 'POST', body: JSON.stringify(body) }),
+  getTransfers: (account_id?: string) =>
+    request(`/transfers${account_id ? `?account_id=${account_id}` : ''}`),
+
+  // Crypto (customer)
+  requestCryptoAccount: (body: { asset: string }) =>
+    request('/crypto', { method: 'POST', body: JSON.stringify(body) }),
+  getMyCrypto: () => request('/crypto'),
+  getCryptoTransactions: (id: string) => request(`/crypto/${id}/transactions`),
+
+  // Admin crypto management
+  adminCrypto: (status = 'all') => request(`/admin/crypto?status=${status}`),
+  reviewCrypto: (id: string, body: { status: string; admin_note?: string }) =>
+    request(`/admin/crypto/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  adjustCryptoBalance: (id: string, body: { amount: number; reason?: string; transaction_type?: string }) =>
+    request(`/admin/crypto/${id}/adjust`, { method: 'POST', body: JSON.stringify(body) }),
+
+  // Notifications
+  getNotifications: (unread = false) => request(`/notifications${unread ? '?unread=true' : ''}`),
+  markNotificationRead: (id: string) =>
+    request(`/notifications/${id}/read`, { method: 'PATCH' }),
+  markAllNotificationsRead: () =>
+    request('/notifications/read-all', { method: 'POST' }),
+
+  // Admin account controls
+  setAccountStatus: (id: string, body: { action: string; reason?: string }) =>
+    request(`/admin/accounts/${id}/status`, { method: 'POST', body: JSON.stringify(body) }),
+  adminAdjustBalance: (id: string, body: { amount: number; reason?: string; description?: string }) =>
+    request(`/admin/accounts/${id}/adjust`, { method: 'POST', body: JSON.stringify(body) }),
+  adminAddTransaction: (id: string, body: any) =>
+    request(`/admin/accounts/${id}/transactions`, { method: 'POST', body: JSON.stringify(body) }),
+
+  // Audit logs
+  getAuditLogs: (params?: { target_type?: string; target_id?: string; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.target_type) q.set('target_type', params.target_type);
+    if (params?.target_id) q.set('target_id', params.target_id);
+    if (params?.limit) q.set('limit', String(params.limit));
+    return request(`/admin/audit-logs?${q.toString()}`);
+  },
 };
 
-export function formatMoney(amount: number | string, currency = 'GBP') {
-  const n = typeof amount === 'string' ? parseFloat(amount) : amount;
-  return new Intl.NumberFormat('en-GB', {
-    style: 'currency',
-    currency,
-    minimumFractionDigits: 2,
-  }).format(n || 0);
-}
-
-export function formatDate(d: string) {
-  return new Date(d).toLocaleString('en-GB', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
+/* Presentation helpers now live in `src/lib/format.ts` and are re-exported
+   here so existing imports of `formatMoney` / `formatDate` keep working. */
+export {
+  formatMoney,
+  formatDate,
+  formatShortDate,
+  formatRelativeDay,
+  formatAmountInput,
+  splitMoney,
+  titleCase,
+  maskAccountNumber,
+  maskBalance,
+  BALANCE_MASK,
+  ACCOUNT_MASK,
+} from './format';

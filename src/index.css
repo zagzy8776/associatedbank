@@ -2,10 +2,86 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================
+   Design system tokens — single source of truth for colour.
+   Space separated RGB channels so Tailwind can apply opacity
+   modifiers (e.g. bg-surface/60).
+   ============================================================ */
+:root {
+  /* Surfaces (neutral grays — Req 17.4) */
+  --surface: 11 18 32;
+  --surface-raised: 26 35 50;
+  --surface-overlay: 30 41 59;
+
+  /* Content (text) */
+  --content-primary: 248 250 252;
+  --content-secondary: 148 163 184;
+  --content-muted: 100 116 139;
+
+  /* Lines / borders */
+  --line-subtle: 30 41 59;
+  --line-strong: 51 65 85;
+
+  /* Brand accent (amber — Req 17.3) */
+  --brand: 245 158 11;
+  --brand-soft: 251 191 36;
+
+  /* State colours (Req 17.1, 17.2) */
+  --state-positive: 52 211 153;
+  --state-negative: 248 113 113;
+
+  /* Motion tokens (Req 1.4) */
+  --duration-fast: 150ms;
+  --duration-base: 200ms;
+  --duration-slow: 300ms;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
-  background: #0b1220;
+  background: rgb(var(--surface));
+  color: rgb(var(--content-primary));
+}
+
+/* Global keyboard focus indicator (Req 20.1) */
+:focus-visible {
+  outline: 2px solid rgb(var(--brand));
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Skip link (Req 20.3) — hidden until focused via keyboard */
+.skip-link {
+  position: absolute;
+  left: 1rem;
+  top: -100%;
+  z-index: 100;
+  padding: 0.75rem 1.25rem;
+  border-radius: 0.75rem;
+  background: rgb(var(--brand));
+  color: #0b1220;
+  font-weight: 600;
+  font-size: 0.875rem;
+  transition: top var(--duration-fast) ease-out;
+}
+.skip-link:focus {
+  top: 1rem;
+}
+
+/* Skeleton shimmer (Req 11.1) */
+.skeleton {
+  background-color: rgba(148, 163, 184, 0.08);
+  background-image: linear-gradient(
+    90deg,
+    rgba(148, 163, 184, 0.05) 0%,
+    rgba(148, 163, 184, 0.16) 50%,
+    rgba(148, 163, 184, 0.05) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
 }
 
 /* Custom scrollbar */
@@ -22,4 +98,62 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: #475569;
+}
+
+/* Enhanced backdrop blur support */
+@supports (backdrop-filter: blur(20px)) {
+  .backdrop-blur {
+    backdrop-filter: blur(20px);
+  }
+  .backdrop-blur-sm {
+    backdrop-filter: blur(4px);
+  }
+  .backdrop-blur-md {
+    backdrop-filter: blur(12px);
+  }
+}
+
+/* Focus visible improvements */
+.focus-visible\:ring-2:focus-visible {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px #f59e0b;
+}
+
+/* Gradient text improvements */
+.bg-clip-text {
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+/* Animation improvements */
+@media (prefers-reduced-motion: no-preference) {
+  .animate-fade-in {
+    animation: fadeIn 0.2s ease-out;
+  }
+  .animate-slide-up {
+    animation: slideUp 0.3s ease-out;
+  }
+  .animate-scale-in {
+    animation: scaleIn 0.2s ease-out;
+  }
+}
+
+/* Respect users who prefer reduced motion (Req 20.6) */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Responsive improvements for smaller screens */
+@media (max-width: 374px) {
+  .xs\:text-xs {
+    font-size: 0.75rem;
+  }
 }

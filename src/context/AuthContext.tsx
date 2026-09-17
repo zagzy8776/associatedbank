@@ -7,6 +7,7 @@ interface User {
   full_name: string;
   role: 'user' | 'admin';
   is_locked?: boolean;
+  created_at?: string;
 }
 
 interface AuthContextType {
