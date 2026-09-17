@@ -76,7 +76,7 @@ export default function AdminPanel() {
           setTransactions((await api.adminTransactions(query)).transactions ?? []);
         } else if (target === 'activity') {
           setActivity((await api.adminActivity()).activity ?? []);
-        } else if (target === 'deposits' || target === 'requests') {
+        } else if (target === 'deposits') {
           setRequests((await api.adminRequests()).requests ?? []);
           try { setDepositRequests((await api.adminDeposits()).deposits ?? []); } catch { /* may not exist yet */ }
         } else if (target === 'audit') {
@@ -101,9 +101,6 @@ export default function AdminPanel() {
     setSearch('');
     setError('');
   };
-
-  // Map 'requests' to 'deposits' for backward compatibility
-  const effectiveTab = tab === 'deposits' ? 'requests' : tab;
 
   const toggleUserLock = async (id: string, locked: boolean) => {
     setBusy(true);
@@ -139,7 +136,7 @@ export default function AdminPanel() {
     try {
       await api.reviewRequest(id, { status });
       setNotice(status === 'approved' ? 'Request approved and account opened.' : 'Request rejected.');
-      await loadTab('requests');
+      await loadTab('deposits');
     } catch (e: any) {
       setActionError(e?.message || 'That decision could not be saved.');
     } finally {
@@ -550,7 +547,7 @@ return (
                   )}
                 </div>
               )}
-{(tab === 'requests' || tab === 'deposits') && (
+{tab === 'deposits' && (
                 <div className="animate-fade-in">
                   <SectionHeading title="Account requests" icon={ClipboardList} />
                   {requests.length === 0 ? (
@@ -615,7 +612,7 @@ return (
               )}
 
               {/* DEPOSIT REQUESTS */}
-              {(tab === 'deposits' || tab === 'requests') && (
+              {tab === 'deposits' && (
                 <div className="animate-fade-in mt-8">
                   <SectionHeading title="Deposit Requests" icon={ArrowDownLeft}
                     action={<span className="text-caption text-content-muted">{depositRequests.filter(d => d.status === 'pending').length} pending</span>} />
