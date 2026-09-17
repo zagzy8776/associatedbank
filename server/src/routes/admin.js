@@ -1,6 +1,6 @@
 /**
  * Enhanced admin routes — account controls, audit log, transaction management.
- * Balance adjust is defensive: works even if optional columns are missing.
+ * Balance adjust uses SAVEPOINTs so a missing column never aborts the whole TX.
  */
 import { Router } from 'express';
 import { query, withTransaction } from '../db.js';
@@ -8,6 +8,20 @@ import { authMiddleware, adminMiddleware } from '../auth.js';
 import { createNotification, createAuditLog } from '../helpers.js';
 
 const router = Router();
+
+/** Run SQL inside a savepoint so failure does not abort the outer transaction. */
+async function tryInSavepoint(client, name, fn) {
+  await client.query(`SAVEPOINT ${name}`);
+  try {
+    await fn();
+    await client.query(`RELEASE SAVEPOINT ${name}`);
+    return true;
+  } catch (err) {
+    await client.query(`ROLLBACK TO SAVEPOINT ${name}`);
+    console.warn(`savepoint ${name} rolled back:`, err.message);
+    return false;
+  }
+}
 
 // Admin: account status controls
 router.post('/api/admin/accounts/:id/status', authMiddleware, adminMiddleware, async (req, res) => {
@@ -38,16 +52,13 @@ router.post('/api/admin/accounts/:id/status', authMiddleware, adminMiddleware, a
       else ns = 'suspended';
 
       await client.query(`UPDATE accounts SET status = $1, is_locked = $2 WHERE id = $3`, [ns, nl, req.params.id]);
-      try {
+      await tryInSavepoint(client, 'sp_profile_status', async () => {
         await client.query(`UPDATE profiles SET account_status = $1 WHERE id = $2`, [ns, a.profile_id]);
-      } catch (_) {
-        /* account_status column may not exist */
-      }
+      });
 
       return { status: ns, is_locked: nl, profile_id: a.profile_id, before };
     });
 
-    // Side effects after commit
     const labels = {
       block: 'blocked', unblock: 'unblocked', close: 'closed', reopen: 'reopened',
       lock: 'locked', unlock: 'unlocked', suspend_deposits: 'suspended', suspend_transfers: 'suspended',
@@ -74,7 +85,7 @@ router.post('/api/admin/accounts/:id/status', authMiddleware, adminMiddleware, a
 
 /**
  * Admin credit/debit — core money movement.
- * Intentionally minimal SQL so missing optional columns never 400 the whole op.
+ * SAVEPOINTs ensure optional columns / schema diffs never abort the credit.
  */
 router.post('/api/admin/accounts/:id/adjust', authMiddleware, adminMiddleware, async (req, res) => {
   try {
@@ -101,35 +112,33 @@ router.post('/api/admin/accounts/:id/adjust', authMiddleware, adminMiddleware, a
       newBalance = oldBalance + amt;
       if (newBalance < 0) throw new Error('Resulting balance cannot be negative');
 
-      // 1) Always update balance (required columns only)
+      // Required: update balance only
       await client.query(`UPDATE accounts SET balance = $1 WHERE id = $2`, [newBalance, req.params.id]);
 
-      // 2) Optional: available_balance + updated_at (ignore if columns missing)
-      try {
+      // Optional columns — isolated savepoint
+      await tryInSavepoint(client, 'sp_avail', async () => {
         await client.query(
-          `UPDATE accounts
-           SET available_balance = COALESCE(available_balance, $1, 0),
-               updated_at = now()
-           WHERE id = $2`,
+          `UPDATE accounts SET available_balance = $1 WHERE id = $2`,
           [newBalance, req.params.id]
         );
-      } catch (colErr) {
-        console.warn('optional account columns skipped:', colErr.message);
-      }
+      });
+      await tryInSavepoint(client, 'sp_updated', async () => {
+        await client.query(`UPDATE accounts SET updated_at = now() WHERE id = $1`, [req.params.id]);
+      });
 
-      // 3) Ledger row — try with user_id, fall back without
       const txType = amt > 0 ? 'admin_credit' : 'admin_debit';
       const desc = description || reason || `Admin ${amt > 0 ? 'credit' : 'debit'}`;
       const ref = `ADJ-${Date.now().toString(36).toUpperCase()}`;
 
-      try {
+      // Ledger: try with user_id, else without — each in its own savepoint
+      const ok = await tryInSavepoint(client, 'sp_tx_full', async () => {
         await client.query(
           `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference, status, created_at)
            VALUES ($1, $2, $3, $4, $5, $6, $7, 'completed', now())`,
           [req.params.id, userId, txType, amt, currency, desc, ref]
         );
-      } catch (txErr) {
-        console.warn('tx insert with user_id failed, retrying minimal:', txErr.message);
+      });
+      if (!ok) {
         await client.query(
           `INSERT INTO transactions (account_id, type, amount, currency, description, reference, status, created_at)
            VALUES ($1, $2, $3, $4, $5, $6, 'completed', now())`,
@@ -138,7 +147,7 @@ router.post('/api/admin/accounts/:id/adjust', authMiddleware, adminMiddleware, a
       }
     });
 
-    // Side effects AFTER successful commit (never roll back the money move)
+    // Side effects after commit
     await createNotification(
       userId,
       amt > 0 ? 'balance_credit' : 'balance_debit',
@@ -176,9 +185,9 @@ router.post('/api/admin/accounts/:id/transactions', authMiddleware, adminMiddlew
       const a = (await client.query(`SELECT * FROM accounts WHERE id = $1 FOR UPDATE`, [req.params.id])).rows[0];
       if (!a) throw new Error('Account not found');
 
-      let tx;
-      try {
-        tx = await client.query(
+      let txRow = null;
+      const ok = await tryInSavepoint(client, 'sp_tx_full', async () => {
+        const r = await client.query(
           `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference, status, created_at)
            VALUES ($1, $2, $3, $4, $5, $6, $7, 'completed', now()) RETURNING *`,
           [
@@ -187,8 +196,10 @@ router.post('/api/admin/accounts/:id/transactions', authMiddleware, adminMiddlew
             reference || `SIM-${Date.now().toString(36).toUpperCase()}`,
           ]
         );
-      } catch (_) {
-        tx = await client.query(
+        txRow = r.rows[0];
+      });
+      if (!ok) {
+        const r = await client.query(
           `INSERT INTO transactions (account_id, type, amount, currency, description, reference, status, created_at)
            VALUES ($1, $2, $3, $4, $5, $6, 'completed', now()) RETURNING *`,
           [
@@ -197,21 +208,19 @@ router.post('/api/admin/accounts/:id/transactions', authMiddleware, adminMiddlew
             reference || `SIM-${Date.now().toString(36).toUpperCase()}`,
           ]
         );
+        txRow = r.rows[0];
       }
 
       if (update_balance) {
         const nb = (parseFloat(a.balance) || 0) + amt;
         if (nb < 0) throw new Error('Resulting balance cannot be negative');
         await client.query(`UPDATE accounts SET balance = $1 WHERE id = $2`, [nb, req.params.id]);
-        try {
-          await client.query(
-            `UPDATE accounts SET available_balance = $1, updated_at = now() WHERE id = $2`,
-            [nb, req.params.id]
-          );
-        } catch (_) {}
+        await tryInSavepoint(client, 'sp_avail', async () => {
+          await client.query(`UPDATE accounts SET available_balance = $1 WHERE id = $2`, [nb, req.params.id]);
+        });
       }
 
-      return { transaction: tx.rows[0] };
+      return { transaction: txRow };
     });
 
     await createAuditLog(
