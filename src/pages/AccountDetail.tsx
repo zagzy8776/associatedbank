@@ -38,7 +38,7 @@ interface Transaction {
 }
 
 const ACTION_COPY: Record<ActionKind, { title: string; description: string; cta: string }> = {
-  deposit: { title: 'Deposit funds', description: 'Add money to this account.', cta: 'Confirm deposit' },
+  deposit: { title: 'Request a deposit', description: 'Submit a deposit request. An admin must approve before funds are credited.', cta: 'Submit request' },
   withdraw: { title: 'Withdraw funds', description: 'Move money out of this account.', cta: 'Confirm withdrawal' },
   transfer: {
     title: 'Transfer funds',
@@ -47,9 +47,11 @@ const ACTION_COPY: Record<ActionKind, { title: string; description: string; cta:
   },
 };
 
-/** Deposits credit the account; withdrawals and outgoing transfers debit it. */
-function isCredit(type: string) {
-  return type === 'deposit';
+function isCredit(type: string, amount?: string) {
+  if (type === 'deposit' || type === 'admin_credit') return true;
+  if (type === 'withdrawal' || type === 'admin_debit') return false;
+  if (amount !== undefined) return parseFloat(amount) >= 0;
+  return false;
 }
 
 export default function AccountDetail() {
@@ -99,7 +101,6 @@ export default function AccountDetail() {
   const meta = currencyMeta(account?.currency);
   const balanceValue = parseFloat(account?.balance ?? '0');
 
-  /* Same-currency destinations only — transfers never convert (Req 3.1). */
   const transferTargets = useMemo(
     () => allAccounts.filter((a) => a.currency === account?.currency && !a.is_locked),
     [allAccounts, account?.currency],
@@ -119,8 +120,9 @@ export default function AccountDetail() {
     setFormError('');
     setAmountError(undefined);
   };
-const submit = async () => {
-    if (!modal) return;
+
+  const submit = async () => {
+    if (!modal || !id) return;
     const max = modal === 'deposit' ? undefined : balanceValue;
     const nextAmountError = validateAmount(amount, account?.currency, max);
     setAmountError(nextAmountError);
@@ -134,19 +136,17 @@ const submit = async () => {
     setFormError('');
     try {
       if (modal === 'deposit') {
-        await api.deposit({ account_id: id, amount, description: desc });
+        await api.deposit({ account_id: id, amount, description: desc, reference: desc });
       } else if (modal === 'withdraw') {
-        await api.withdraw({ account_id: id, amount, description: desc });
+        throw new Error('Withdrawals must be arranged with client services. Use Transfer to move money between your accounts.');
       } else {
         await api.transfer({ from_account_id: id, to_account_id: toAccount, amount, description: desc });
       }
       const formatted = formatMoney(amount, account?.currency);
       setSuccess(
         modal === 'deposit'
-          ? `${formatted} added to this account.`
-          : modal === 'withdraw'
-            ? `${formatted} withdrawn from this account.`
-            : `${formatted} transferred successfully.`,
+          ? `Deposit request for ${formatted} submitted. Funds appear after admin approval.`
+          : `${formatted} transferred successfully.`,
       );
       closeModal();
       await load();
@@ -188,7 +188,8 @@ const submit = async () => {
       </div>
     );
   }
-return (
+
+  return (
     <div className="min-h-screen bg-surface pb-16">
       <SkipLink />
 
@@ -301,7 +302,8 @@ return (
             )}
           </div>
         </Card>
-<section className="mt-10" aria-labelledby="activity-heading">
+
+        <section className="mt-10" aria-labelledby="activity-heading">
           <SectionHeading
             id="activity-heading"
             title="Recent activity"
@@ -387,7 +389,7 @@ return (
             placeholder="0.00"
             hint={
               modal === 'deposit'
-                ? 'Deposits are credited immediately.'
+                ? 'Deposit requests are reviewed by admin before funds are credited.'
                 : `Available to use: ${maskBalance(formatMoney(account.balance, account.currency), hideBalances)}`
             }
             leadingIcon={<span className="text-sm font-medium">{meta.symbol}</span>}
@@ -416,10 +418,10 @@ return (
     </div>
   );
 }
-/** Single transaction row with direction-aware iconography and colouring. */
+
 function TransactionRow({ tx, hidden }: { tx: Transaction; hidden: boolean }) {
-  const credit = isCredit(tx.type);
-  const isWithdrawal = tx.type === 'withdrawal';
+  const credit = isCredit(tx.type, tx.amount);
+  const isWithdrawal = tx.type === 'withdrawal' || tx.type === 'admin_debit';
   const Icon = credit ? ArrowDownLeft : isWithdrawal ? ArrowUpRight : ArrowRightLeft;
   const label = isWithdrawal ? 'Withdrawal' : tx.type === 'transfer' ? 'Transfer' : 'Deposit';
 
