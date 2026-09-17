@@ -53,13 +53,25 @@ export const api = {
 
   // Customer
   getAccounts: () => request('/accounts'),
-  createAccount: (body: { currency: string; account_name?: string }) =>
+  createAccount: (body: { currency: string; account_name?: string; account_type?: string }) =>
     request('/accounts', { method: 'POST', body: JSON.stringify(body) }),
   getAccount: (id: string) => request(`/accounts/${id}`),
   getTransactions: (id: string) => request(`/accounts/${id}/transactions`),
   transfer: (body: any) => request('/transfer', { method: 'POST', body: JSON.stringify(body) }),
-  deposit: (body: any) => request('/deposit', { method: 'POST', body: JSON.stringify(body) }),
-  withdraw: (body: any) => request('/withdraw', { method: 'POST', body: JSON.stringify(body) }),
+  /** Deposit = request for admin approval (never instant self-credit). */
+  deposit: (body: { account_id: string; amount: number | string; description?: string; reference?: string }) =>
+    request('/deposits', {
+      method: 'POST',
+      body: JSON.stringify({
+        account_id: body.account_id,
+        amount: typeof body.amount === 'string' ? parseFloat(body.amount) : body.amount,
+        reference: body.reference || body.description,
+      }),
+    }),
+  /** Withdrawals are not self-serve; keep stub that fails clearly. */
+  withdraw: async (_body: any) => {
+    throw new Error('Withdrawals must be arranged with client services. Use Transfers to move money between your accounts.');
+  },
   createRequest: (body: any) => request('/requests', { method: 'POST', body: JSON.stringify(body) }),
   myRequests: () => request('/requests/mine'),
 
@@ -73,7 +85,6 @@ export const api = {
     adminRequest(`/admin/accounts/${id}/lock`, { method: 'PATCH', body: JSON.stringify({ locked }) }),
   adminCreateAccount: (body: any) =>
     adminRequest('/admin/accounts', { method: 'POST', body: JSON.stringify(body) }),
-  // Prefer path-based adjust (hardened); keep body shape for UI
   adjustBalance: (body: {
     account_id: string;
     amount: number;
@@ -82,7 +93,6 @@ export const api = {
   }) => {
     const signed =
       body.adjustment_type === 'debit' ? -Math.abs(Number(body.amount)) : Math.abs(Number(body.amount));
-    // Use the route that is now hardened for large numbers + null available_balance
     return adminRequest(`/admin/accounts/${body.account_id}/adjust`, {
       method: 'POST',
       body: JSON.stringify({
@@ -93,6 +103,11 @@ export const api = {
     });
   },
   adminTransactions: (q = '') => adminRequest(`/admin/transactions?q=${encodeURIComponent(q)}`),
+  editTransaction: (
+    id: string,
+    body: { created_at?: string; description?: string; reference?: string; amount?: number }
+  ) =>
+    adminRequest(`/admin/transactions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   adminActivity: () => adminRequest('/admin/activity'),
   adminRequests: () => adminRequest('/admin/requests'),
   reviewRequest: (id: string, body: { status: string; admin_note?: string }) =>
@@ -103,17 +118,14 @@ export const api = {
   promote: (email?: string) =>
     adminRequest('/admin/promote', { method: 'POST', body: JSON.stringify({ email }) }),
 
-  // Deposit requests (customer)
   createDepositRequest: (body: { account_id: string; amount: number; reference?: string }) =>
     request('/deposits', { method: 'POST', body: JSON.stringify(body) }),
   getMyDeposits: () => request('/deposits'),
 
-  // Admin deposit management
   adminDeposits: (status = 'all') => adminRequest(`/admin/deposits?status=${status}`),
   reviewDeposit: (id: string, body: { status: string; admin_note?: string }) =>
     adminRequest(`/admin/deposits/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
 
-  // Transfers (by account number)
   initiateTransfer: (body: {
     from_account_id: string;
     to_account_number: string;
@@ -123,27 +135,23 @@ export const api = {
   getTransfers: (account_id?: string) =>
     request(`/transfers${account_id ? `?account_id=${account_id}` : ''}`),
 
-  // Crypto (customer)
   requestCryptoAccount: (body: { asset: string }) =>
     request('/crypto', { method: 'POST', body: JSON.stringify(body) }),
   getMyCrypto: () => request('/crypto'),
   getCryptoTransactions: (id: string) => request(`/crypto/${id}/transactions`),
 
-  // Admin crypto management
   adminCrypto: (status = 'all') => adminRequest(`/admin/crypto?status=${status}`),
   reviewCrypto: (id: string, body: { status: string; admin_note?: string }) =>
     adminRequest(`/admin/crypto/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   adjustCryptoBalance: (id: string, body: { amount: number; reason?: string; transaction_type?: string }) =>
     adminRequest(`/admin/crypto/${id}/adjust`, { method: 'POST', body: JSON.stringify(body) }),
 
-  // Notifications
   getNotifications: (unread = false) => request(`/notifications${unread ? '?unread=true' : ''}`),
   markNotificationRead: (id: string) =>
     request(`/notifications/${id}/read`, { method: 'PATCH' }),
   markAllNotificationsRead: () =>
     request('/notifications/read-all', { method: 'POST' }),
 
-  // Admin account controls
   setAccountStatus: (id: string, body: { action: string; reason?: string }) =>
     adminRequest(`/admin/accounts/${id}/status`, { method: 'POST', body: JSON.stringify(body) }),
   adminAdjustBalance: (id: string, body: { amount: number; reason?: string; description?: string }) =>
@@ -151,7 +159,6 @@ export const api = {
   adminAddTransaction: (id: string, body: any) =>
     adminRequest(`/admin/accounts/${id}/transactions`, { method: 'POST', body: JSON.stringify(body) }),
 
-  // Audit logs
   getAuditLogs: (params?: { target_type?: string; target_id?: string; limit?: number }) => {
     const q = new URLSearchParams();
     if (params?.target_type) q.set('target_type', params.target_type);
