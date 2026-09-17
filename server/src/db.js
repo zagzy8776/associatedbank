@@ -4,17 +4,30 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: join(__dirname, '../../.env') });
 
-const pool = new pg.Pool({
-  host: process.env.PGHOST,
-  port: parseInt(process.env.PGPORT || '5432', 10),
-  database: process.env.PGDATABASE,
-  user: process.env.PGUSER,
-  password: process.env.PGPASSWORD,
-  ssl: { rejectUnauthorized: false },
-  max: 20,
-});
+// In Vercel, env vars are set in the dashboard, not from .env
+if (!process.env.VERCEL) {
+  dotenv.config({ path: join(__dirname, '../../.env') });
+}
+
+// Cache the pool across serverless invocations to reuse connections
+const globalForPg = globalThis;
+
+if (!globalForPg.__pgPool) {
+  globalForPg.__pgPool = new pg.Pool({
+    host: process.env.PGHOST,
+    port: parseInt(process.env.PGPORT || '5432', 10),
+    database: process.env.PGDATABASE,
+    user: process.env.PGUSER,
+    password: process.env.PGPASSWORD,
+    ssl: { rejectUnauthorized: false },
+    max: 5, // Lower max for serverless to avoid exhausting connections
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000,
+  });
+}
+
+const pool = globalForPg.__pgPool;
 
 export async function query(text, params) {
   const start = Date.now();

@@ -9,6 +9,7 @@ import {
   authMiddleware, adminMiddleware, getProfile
 } from './auth.js';
 import { runMigrations } from './migrations.js';
+import { createNotification, createAuditLog } from './helpers.js';
 import depositRoutes from './routes/deposits.js';
 import transferRoutes from './routes/transfers.js';
 import cryptoRoutes from './routes/crypto.js';
@@ -16,7 +17,9 @@ import notificationRoutes from './routes/notifications.js';
 import adminRoutes from './routes/admin.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: join(__dirname, '../../.env') });
+if (!process.env.VERCEL) {
+  dotenv.config({ path: join(__dirname, '../../.env') });
+}
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -735,12 +738,17 @@ app.post('/api/admin/promote', authMiddleware, async (req, res) => {
 // Health
 app.get('/api/health', (req, res) => res.json({ status: 'ok', bank: 'Rubicon Capital' }));
 
-// Run migrations then start server
-runMigrations().then(() => {
-  app.listen(PORT, () => {
-    console.log(`Rubicon Capital API running on http://localhost:${PORT}`);
+// Always export the app for serverless (Vercel)
+export default app;
+
+// Start server when running directly (not in serverless)
+if (!process.env.VERCEL) {
+  runMigrations().then(() => {
+    app.listen(PORT, () => {
+      console.log(`Rubicon Capital API running on http://localhost:${PORT}`);
+    });
+  }).catch(err => {
+    console.error('Migration failed:', err);
+    process.exit(1);
   });
-}).catch(err => {
-  console.error('Migration failed:', err);
-  process.exit(1);
-});
+}
