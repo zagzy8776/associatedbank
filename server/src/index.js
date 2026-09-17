@@ -590,17 +590,24 @@ app.post('/api/admin/accounts', authMiddleware, adminMiddleware, async (req, res
 app.post('/api/admin/adjust-balance', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { account_id, amount, adjustment_type, reason } = req.body;
-    const amt = parseFloat(amount);
 
-    if (!account_id || !amt || amt <= 0 || !['credit', 'debit'].includes(adjustment_type)) {
-      return res.status(400).json({ error: 'Invalid adjustment data. Provide account_id, amount > 0, and adjustment_type (credit/debit).' });
-    }
+    // Debug logging
+    console.log('adjust-balance request:', { account_id, amount, adjustment_type, reason });
+
+    if (!account_id) return res.status(400).json({ error: 'account_id is required' });
+    if (amount === undefined || amount === null || amount === '') return res.status(400).json({ error: 'amount is required' });
+
+    const amt = parseFloat(amount);
+    if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ error: 'amount must be a positive number' });
+
+    const type = adjustment_type || 'credit';
+    if (!['credit', 'debit'].includes(type)) return res.status(400).json({ error: 'adjustment_type must be credit or debit' });
 
     const result = await withTransaction(async (client) => {
       const acct = (await client.query(`SELECT * FROM accounts WHERE id=$1 FOR UPDATE`, [account_id])).rows[0];
       if (!acct) throw new Error('Account not found');
 
-      const delta = adjustment_type === 'credit' ? amt : -amt;
+      const delta = type === 'credit' ? amt : -amt;
       const newBalance = parseFloat(acct.balance) + delta;
       if (newBalance < 0) throw new Error('Resulting balance cannot be negative');
 
@@ -612,12 +619,12 @@ app.post('/api/admin/adjust-balance', authMiddleware, adminMiddleware, async (re
       const tx = await client.query(
         `INSERT INTO transactions (account_id, type, amount, currency, description, reference, status, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, 'completed', now()) RETURNING *`,
-        [account_id, `admin_${adjustment_type}`, delta, acct.currency,
-         reason || `Admin ${adjustment_type}`, `ADJ-${Date.now().toString(36).toUpperCase()}`]
+        [account_id, `admin_${type}`, delta, acct.currency,
+         reason || `Admin ${type}`, `ADJ-${Date.now().toString(36).toUpperCase()}`]
       );
 
-      await createNotification(acct.user_id, `balance_${adjustment_type}`, `Balance ${adjustment_type === 'credit' ? 'credited' : 'debited'}`,
-        `$${amt.toFixed(2)} ${acct.currency} ${adjustment_type === 'credit' ? 'added to' : 'removed from'} your account.`,
+      await createNotification(acct.user_id, `balance_${type}`, `Balance ${type === 'credit' ? 'credited' : 'debited'}`,
+        `$${amt.toFixed(2)} ${acct.currency} ${type === 'credit' ? 'added to' : 'removed from'} your account.`,
         { account_id: acct.id, amount: delta, reason });
 
       await createAuditLog(req.user.id, 'balance_adjust', 'account', acct.id,
@@ -628,6 +635,7 @@ app.post('/api/admin/adjust-balance', authMiddleware, adminMiddleware, async (re
 
     res.json({ success: true, ...result });
   } catch (err) {
+    console.error('adjust-balance error:', err);
     res.status(400).json({ error: err.message || 'Adjustment failed' });
   }
 });

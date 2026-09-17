@@ -60,6 +60,7 @@ export default function AdminPanel() {
   // New data states for deposit requests and audit logs
   const [depositRequests, setDepositRequests] = useState<any[]>([]);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [cryptoAccounts, setCryptoAccounts] = useState<any[]>([]);
 
   const loadTab = useCallback(
     async (target: Tab, query = '') => {
@@ -81,6 +82,8 @@ export default function AdminPanel() {
           try { setDepositRequests((await api.adminDeposits()).deposits ?? []); } catch { /* may not exist yet */ }
         } else if (target === 'audit') {
           try { setAuditLogs((await api.getAuditLogs()).audit_logs ?? []); } catch { setAuditLogs([]); }
+        } else if (target === 'crypto') {
+          try { setCryptoAccounts((await api.adminCrypto()).crypto_accounts ?? []); } catch { setCryptoAccounts([]); }
         }
       } catch (e: any) {
         setError(e?.message || 'We could not load that section.');
@@ -146,14 +149,20 @@ export default function AdminPanel() {
 
   const handleAdjustBalance = async () => {
     setActionError('');
-    if (!adjustAccountId || !adjustAmount || parseFloat(adjustAmount) <= 0) {
-      setActionError('Select an account and enter a valid amount.'); return;
+    if (!adjustAccountId) { setActionError('No account selected.'); return; }
+    if (!adjustAmount || isNaN(parseFloat(adjustAmount)) || parseFloat(adjustAmount) <= 0) {
+      setActionError('Enter a valid positive amount.'); return;
     }
     setBusy(true);
     try {
-      await api.adjustBalance({ account_id: adjustAccountId, amount: parseFloat(adjustAmount), adjustment_type: adjustType, reason: adjustReason });
+      const result = await api.adjustBalance({
+        account_id: adjustAccountId,
+        amount: parseFloat(adjustAmount),
+        adjustment_type: adjustType || 'credit',
+        reason: adjustReason || `Admin ${adjustType || 'credit'}`
+      });
       setShowAdjust(false); setAdjustAmount(''); setAdjustReason('');
-      setNotice(`Account ${adjustType === 'credit' ? 'credited' : 'debited'} successfully.`);
+      setNotice(`Account ${adjustType === 'credit' ? 'credited' : 'debited'} successfully. New balance: ${result.newBalance}`);
       await loadTab('accounts');
     } catch (e: any) { setActionError(e?.message || 'Adjustment failed'); }
     finally { setBusy(false); }
@@ -189,6 +198,26 @@ export default function AdminPanel() {
       setNotice(status === 'approved' ? 'Deposit approved and funds credited.' : 'Deposit request rejected.');
       await loadTab('deposits');
     } catch (e: any) { setActionError(e?.message || 'Review failed'); }
+    finally { setBusy(false); }
+  };
+
+  const handleCryptoReview = async (id: string, status: 'active' | 'rejected' | 'suspended') => {
+    setActionError(''); setBusy(true);
+    try {
+      await api.reviewCrypto(id, { status });
+      setNotice(`Crypto account ${status === 'active' ? 'approved' : status}.`);
+      await loadTab('crypto');
+    } catch (e: any) { setActionError(e?.message || 'Failed'); }
+    finally { setBusy(false); }
+  };
+
+  const handleCryptoAdjust = async (id: string, amount: number, reason?: string) => {
+    setActionError(''); setBusy(true);
+    try {
+      await api.adjustCryptoBalance(id, { amount, reason });
+      setNotice('Crypto balance adjusted.');
+      await loadTab('crypto');
+    } catch (e: any) { setActionError(e?.message || 'Failed'); }
     finally { setBusy(false); }
   };
 
@@ -674,6 +703,77 @@ return (
                               {log.reason && <p className="text-caption text-content-secondary mt-0.5">"{log.reason}"</p>}
                             </div>
                             <p className="text-micro text-content-muted shrink-0">{formatDate(log.created_at)}</p>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+
+              {/* CRYPTO MANAGEMENT */}
+              {tab === 'crypto' && (
+                <div className="animate-fade-in">
+                  <SectionHeading title="Crypto Accounts" icon={Coins}
+                    action={<span className="text-caption text-content-muted">{cryptoAccounts.length} accounts</span>} />
+                  {cryptoAccounts.length === 0 ? (
+                    <EmptyState icon={Coins} title="No crypto accounts"
+                      description="Customer crypto account requests will appear here." />
+                  ) : (
+                    <ul className="space-y-3">
+                      {cryptoAccounts.map((ca) => (
+                        <li key={ca.id} className="rounded-card border border-line-subtle bg-surface-raised/40 px-4 py-4">
+                          <div className="flex flex-wrap items-start justify-between gap-4">
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="w-10 h-10 rounded-control bg-surface-overlay/60 flex items-center justify-center font-bold text-sm text-brand-400">
+                                  {ca.asset}
+                                </span>
+                                <div>
+                                  <p className="text-sm font-medium">{ca.full_name || 'Customer'}</p>
+                                  <p className="text-caption text-content-muted">{ca.email}</p>
+                                </div>
+                              </div>
+                              <p className="text-caption text-content-muted mt-2 font-mono">{ca.wallet_address}</p>
+                              <p className="text-sm font-semibold mt-1">{parseFloat(ca.balance).toFixed(8)} {ca.asset}</p>
+                              {ca.admin_note && <p className="text-caption text-content-secondary mt-1">Note: {ca.admin_note}</p>}
+                            </div>
+                            <div className="flex flex-col items-end gap-2 shrink-0">
+                              <StatusBadge status={ca.status} />
+                              {ca.status === 'pending' && (
+                                <div className="flex gap-2">
+                                  <Button variant="success" size="sm" disabled={busy}
+                                    onClick={() => handleCryptoReview(ca.id, 'active')}>
+                                    Approve
+                                  </Button>
+                                  <Button variant="danger" size="sm" disabled={busy}
+                                    onClick={() => handleCryptoReview(ca.id, 'rejected')}>
+                                    Reject
+                                  </Button>
+                                </div>
+                              )}
+                              {ca.status === 'active' && (
+                                <div className="flex gap-2">
+                                  <Button variant="secondary" size="sm" disabled={busy}
+                                    onClick={() => {
+                                      const amt = prompt(`Add ${ca.asset} balance (e.g. 0.5):`);
+                                      if (amt && parseFloat(amt) > 0) handleCryptoAdjust(ca.id, parseFloat(amt));
+                                    }}>
+                                    + {ca.asset}
+                                  </Button>
+                                  <Button variant="danger" size="sm" disabled={busy}
+                                    onClick={() => handleCryptoReview(ca.id, 'suspended')}>
+                                    Suspend
+                                  </Button>
+                                </div>
+                              )}
+                              {ca.status === 'suspended' && (
+                                <Button variant="success" size="sm" disabled={busy}
+                                  onClick={() => handleCryptoReview(ca.id, 'active')}>
+                                  Reactivate
+                                </Button>
+                              )}
+                            </div>
                           </div>
                         </li>
                       ))}
