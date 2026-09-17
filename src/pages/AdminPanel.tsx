@@ -11,7 +11,7 @@ import {
 import { cx } from '../lib/designTokens';
 import AdminLayout, { type AdminTab } from '../components/AdminLayout';
 import {
-  Activity, ArrowDownLeft, ArrowUpRight, Check, ClipboardList, Lock, Plus,
+  Activity, ArrowDownLeft, ArrowUpRight, Check, ClipboardList, Coins, Lock, Plus,
   ScrollText, Shield, Unlock, Users, Wallet, X,
 } from 'lucide-react';
 
