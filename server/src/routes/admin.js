@@ -1,6 +1,6 @@
 /**
  * Enhanced admin routes — account controls, audit log, transaction management.
- * Balance adjust uses SAVEPOINTs so a missing column never aborts the whole TX.
+ * Balance adjust uses SAVEPOINTs; transactions.user_id is always set (NOT NULL).
  */
 import { Router } from 'express';
 import { query, withTransaction } from '../db.js';
@@ -13,13 +13,13 @@ const router = Router();
 async function tryInSavepoint(client, name, fn) {
   await client.query(`SAVEPOINT ${name}`);
   try {
-    await fn();
+    const result = await fn();
     await client.query(`RELEASE SAVEPOINT ${name}`);
-    return true;
+    return { ok: true, result };
   } catch (err) {
     await client.query(`ROLLBACK TO SAVEPOINT ${name}`);
     console.warn(`savepoint ${name} rolled back:`, err.message);
-    return false;
+    return { ok: false, error: err };
   }
 }
 
@@ -84,8 +84,8 @@ router.post('/api/admin/accounts/:id/status', authMiddleware, adminMiddleware, a
 });
 
 /**
- * Admin credit/debit — core money movement.
- * SAVEPOINTs ensure optional columns / schema diffs never abort the credit.
+ * Admin credit/debit.
+ * Always writes transactions.user_id from accounts.user_id (column is NOT NULL).
  */
 router.post('/api/admin/accounts/:id/adjust', authMiddleware, adminMiddleware, async (req, res) => {
   try {
@@ -105,49 +105,58 @@ router.post('/api/admin/accounts/:id/adjust', authMiddleware, adminMiddleware, a
     await withTransaction(async (client) => {
       const a = (await client.query(`SELECT * FROM accounts WHERE id = $1 FOR UPDATE`, [req.params.id])).rows[0];
       if (!a) throw new Error('Account not found');
+      if (!a.user_id) throw new Error('Account has no owner (user_id is null)');
 
       userId = a.user_id;
-      currency = a.currency;
+      currency = a.currency || 'GBP';
       oldBalance = parseFloat(a.balance) || 0;
       newBalance = oldBalance + amt;
       if (newBalance < 0) throw new Error('Resulting balance cannot be negative');
 
-      // Required: update balance only
+      // 1) Required balance update
       await client.query(`UPDATE accounts SET balance = $1 WHERE id = $2`, [newBalance, req.params.id]);
 
-      // Optional columns — isolated savepoint
+      // 2) Optional columns — never abort main TX
       await tryInSavepoint(client, 'sp_avail', async () => {
-        await client.query(
-          `UPDATE accounts SET available_balance = $1 WHERE id = $2`,
-          [newBalance, req.params.id]
-        );
+        await client.query(`UPDATE accounts SET available_balance = $1 WHERE id = $2`, [newBalance, req.params.id]);
       });
       await tryInSavepoint(client, 'sp_updated', async () => {
         await client.query(`UPDATE accounts SET updated_at = now() WHERE id = $1`, [req.params.id]);
       });
 
-      const txType = amt > 0 ? 'admin_credit' : 'admin_debit';
+      // 3) Ledger — user_id is REQUIRED (NOT NULL). Use safe type names.
+      const txType = amt > 0 ? 'deposit' : 'withdrawal';
       const desc = description || reason || `Admin ${amt > 0 ? 'credit' : 'debit'}`;
       const ref = `ADJ-${Date.now().toString(36).toUpperCase()}`;
 
-      // Ledger: try with user_id, else without — each in its own savepoint
-      const ok = await tryInSavepoint(client, 'sp_tx_full', async () => {
+      // Try richest insert first, then minimal — both always include user_id
+      const attempt1 = await tryInSavepoint(client, 'sp_tx1', async () => {
         await client.query(
-          `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference, status, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, 'completed', now())`,
+          `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'completed')`,
           [req.params.id, userId, txType, amt, currency, desc, ref]
         );
       });
-      if (!ok) {
-        await client.query(
-          `INSERT INTO transactions (account_id, type, amount, currency, description, reference, status, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, 'completed', now())`,
-          [req.params.id, txType, amt, currency, desc, ref]
-        );
+
+      if (!attempt1.ok) {
+        const attempt2 = await tryInSavepoint(client, 'sp_tx2', async () => {
+          await client.query(
+            `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [req.params.id, userId, txType, Math.abs(amt), currency, desc, ref]
+          );
+        });
+        if (!attempt2.ok) {
+          // Last resort: absolute minimum columns
+          await client.query(
+            `INSERT INTO transactions (account_id, user_id, type, amount, currency)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [req.params.id, userId, txType, Math.abs(amt), currency]
+          );
+        }
       }
     });
 
-    // Side effects after commit
     await createNotification(
       userId,
       amt > 0 ? 'balance_credit' : 'balance_debit',
@@ -184,12 +193,13 @@ router.post('/api/admin/accounts/:id/transactions', authMiddleware, adminMiddlew
     const result = await withTransaction(async (client) => {
       const a = (await client.query(`SELECT * FROM accounts WHERE id = $1 FOR UPDATE`, [req.params.id])).rows[0];
       if (!a) throw new Error('Account not found');
+      if (!a.user_id) throw new Error('Account has no owner (user_id is null)');
 
       let txRow = null;
-      const ok = await tryInSavepoint(client, 'sp_tx_full', async () => {
+      const attempt1 = await tryInSavepoint(client, 'sp_tx1', async () => {
         const r = await client.query(
-          `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference, status, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, 'completed', now()) RETURNING *`,
+          `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'completed') RETURNING *`,
           [
             req.params.id, a.user_id, type, amt, a.currency,
             description || `Simulated ${type}`,
@@ -198,12 +208,12 @@ router.post('/api/admin/accounts/:id/transactions', authMiddleware, adminMiddlew
         );
         txRow = r.rows[0];
       });
-      if (!ok) {
+      if (!attempt1.ok) {
         const r = await client.query(
-          `INSERT INTO transactions (account_id, type, amount, currency, description, reference, status, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, 'completed', now()) RETURNING *`,
+          `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference)
+           VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
           [
-            req.params.id, type, amt, a.currency,
+            req.params.id, a.user_id, type, amt, a.currency,
             description || `Simulated ${type}`,
             reference || `SIM-${Date.now().toString(36).toUpperCase()}`,
           ]
