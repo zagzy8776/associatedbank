@@ -23,18 +23,24 @@ export async function runMigrations() {
     await query(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS ${col} ${type}`).catch(() => {});
   }
 
-  // 2. Extend accounts table
+  // 2. Extend accounts table + widen balances for large admin credits
   const accountCols = [
     ['status', "TEXT DEFAULT 'active'"],
-    ['available_balance', 'NUMERIC(18,2) DEFAULT 0'],
-    ['daily_limit', 'NUMERIC(18,2) DEFAULT 20000'],
-    ['transaction_limit', 'NUMERIC(18,2) DEFAULT 5000'],
-    ['monthly_limit', 'NUMERIC(18,2) DEFAULT 100000'],
+    ['available_balance', 'NUMERIC(24,2) DEFAULT 0'],
+    ['daily_limit', 'NUMERIC(24,2) DEFAULT 20000'],
+    ['transaction_limit', 'NUMERIC(24,2) DEFAULT 5000'],
+    ['monthly_limit', 'NUMERIC(24,2) DEFAULT 100000'],
   ];
   for (const [col, type] of accountCols) {
     await query(`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS ${col} ${type}`).catch(() => {});
   }
+  // Widen existing balance columns so 50_000_000_000 / 25_000_000_000_000 fit
+  await query(`ALTER TABLE accounts ALTER COLUMN balance TYPE NUMERIC(24,2)`).catch(() => {});
+  await query(`ALTER TABLE accounts ALTER COLUMN available_balance TYPE NUMERIC(24,2)`).catch(() => {});
   await query(`UPDATE accounts SET available_balance = COALESCE(balance, 0) WHERE available_balance IS NULL`).catch(() => {});
+
+  // Widen transaction amounts too
+  await query(`ALTER TABLE transactions ALTER COLUMN amount TYPE NUMERIC(24,2)`).catch(() => {});
 
   // 3. Update generate_account_number() to SIM-XXX-NNNNNNNN format
   await query(`
@@ -62,7 +68,7 @@ export async function runMigrations() {
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       account_id UUID NOT NULL REFERENCES accounts(id),
       customer_id UUID NOT NULL REFERENCES profiles(id),
-      amount NUMERIC(18,2) NOT NULL CHECK (amount > 0),
+      amount NUMERIC(24,2) NOT NULL CHECK (amount > 0),
       currency TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending',
       admin_id UUID REFERENCES profiles(id),
@@ -126,7 +132,7 @@ export async function runMigrations() {
   await query(`CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_notif_unread ON notifications(user_id, is_read) WHERE is_read = false;`);
 
-  // 8. audit_logs table
+  // 8. audit_logs table — actor_id kept as UUID; helpers map system admin to fixed UUID
   await query(`
     CREATE TABLE IF NOT EXISTS audit_logs (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
