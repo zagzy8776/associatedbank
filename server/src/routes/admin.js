@@ -1,5 +1,6 @@
 /**
  * Enhanced admin routes — account controls, audit log, transaction management.
+ * Hardened for large balances and system-admin (non-UUID) actor ids.
  */
 import { Router } from 'express';
 import { query, withTransaction } from '../db.js';
@@ -40,29 +41,55 @@ router.post('/api/admin/accounts/:id/status', authMiddleware, adminMiddleware, a
   } catch(err){ res.status(400).json({error:err.message||'Action failed'}); }
 });
 
-// Admin: adjust account balance
+// Admin: adjust account balance (supports huge credits)
 router.post('/api/admin/accounts/:id/adjust', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { amount, reason, description } = req.body;
-    const amt = parseFloat(amount);
-    if (!Number.isFinite(amt)||amt===0) return res.status(400).json({error:'Valid amount required'});
+    const raw = typeof amount === 'string' ? amount.replace(/,/g, '') : amount;
+    const amt = parseFloat(raw);
+    if (!Number.isFinite(amt) || amt === 0) return res.status(400).json({ error: 'Valid non-zero amount required' });
     const result = await withTransaction(async (client) => {
-      const a = (await client.query(`SELECT * FROM accounts WHERE id=$1 FOR UPDATE`,[req.params.id])).rows[0];
+      const a = (await client.query(`SELECT * FROM accounts WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
       if (!a) throw new Error('Account not found');
-      const nb = parseFloat(a.balance)+amt;
-      if (nb<0) throw new Error('Resulting balance cannot be negative');
-      await client.query(`UPDATE accounts SET balance=$1,available_balance=available_balance+$2 WHERE id=$3`,[nb,amt,req.params.id]);
+      const current = parseFloat(a.balance) || 0;
+      const nb = current + amt;
+      if (nb < 0) throw new Error('Resulting balance cannot be negative');
       await client.query(
-        `INSERT INTO transactions (account_id,type,amount,currency,description,reference,status,created_at) VALUES ($1,$2,$3,$4,$5,$6,'completed',now())`,
-        [req.params.id,amt>0?'admin_credit':'admin_debit',amt,a.currency,description||`Admin ${amt>0?'credit':'debit'}`,`ADJ-${Date.now().toString(36).toUpperCase()}`]
+        `UPDATE accounts
+         SET balance = $1,
+             available_balance = COALESCE(available_balance, balance, 0) + $2,
+             updated_at = now()
+         WHERE id = $3`,
+        [nb, amt, req.params.id]
       );
-      await createNotification(a.user_id,`balance_${amt>0?'credit':'debit'}`,`Balance ${amt>0?'credited':'debited'}`,
-        `$${Math.abs(amt).toFixed(2)} ${a.currency} ${amt>0?'added to':'removed from'} your account.`,{account_id:a.id,amount:amt,reason});
-      await createAuditLog(req.user.id,'balance_adjust','account',a.id,{balance:a.balance},{balance:nb},reason,req.ip);
-      return { newBalance:nb };
+      await client.query(
+        `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference, status, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'completed', now())`,
+        [
+          req.params.id,
+          a.user_id,
+          amt > 0 ? 'admin_credit' : 'admin_debit',
+          amt,
+          a.currency,
+          description || `Admin ${amt > 0 ? 'credit' : 'debit'}`,
+          `ADJ-${Date.now().toString(36).toUpperCase()}`,
+        ]
+      );
+      await createNotification(
+        a.user_id,
+        `balance_${amt > 0 ? 'credit' : 'debit'}`,
+        `Balance ${amt > 0 ? 'credited' : 'debited'}`,
+        `${Math.abs(amt).toLocaleString('en-GB')} ${a.currency} ${amt > 0 ? 'added to' : 'removed from'} your account.`,
+        { account_id: a.id, amount: amt, reason }
+      );
+      await createAuditLog(req.user.id, 'balance_adjust', 'account', a.id, { balance: current }, { balance: nb }, reason, req.ip);
+      return { newBalance: nb };
     });
-    res.json({ success:true, ...result });
-  } catch(err){ res.status(400).json({error:err.message||'Adjustment failed'}); }
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('accounts/:id/adjust error:', err);
+    res.status(400).json({ error: err.message || 'Adjustment failed' });
+  }
 });
 
 // Admin: add simulated transaction to account
@@ -70,24 +97,44 @@ router.post('/api/admin/accounts/:id/transactions', authMiddleware, adminMiddlew
   try {
     const { type, amount, description, reference, update_balance, reason } = req.body;
     if (!type || amount === undefined) return res.status(400).json({ error: 'Type and amount required' });
-    const amt = parseFloat(amount);
+    const amt = parseFloat(typeof amount === 'string' ? amount.replace(/,/g, '') : amount);
+    if (!Number.isFinite(amt)) return res.status(400).json({ error: 'Invalid amount' });
     const result = await withTransaction(async (client) => {
       const a = (await client.query(`SELECT * FROM accounts WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
       if (!a) throw new Error('Account not found');
       const tx = await client.query(
-        `INSERT INTO transactions (account_id,type,amount,currency,description,reference,status,created_at) VALUES ($1,$2,$3,$4,$5,$6,'completed',now()) RETURNING *`,
-        [req.params.id, type, amt, a.currency, description||`Simulated ${type}`, reference||`SIM-${Date.now().toString(36).toUpperCase()}`]
+        `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference, status, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'completed', now()) RETURNING *`,
+        [
+          req.params.id,
+          a.user_id,
+          type,
+          amt,
+          a.currency,
+          description || `Simulated ${type}`,
+          reference || `SIM-${Date.now().toString(36).toUpperCase()}`,
+        ]
       );
       if (update_balance) {
-        const nb = parseFloat(a.balance) + amt;
+        const nb = (parseFloat(a.balance) || 0) + amt;
         if (nb < 0) throw new Error('Resulting balance cannot be negative');
-        await client.query(`UPDATE accounts SET balance=$1,available_balance=available_balance+$2 WHERE id=$3`, [nb, amt, req.params.id]);
+        await client.query(
+          `UPDATE accounts
+           SET balance = $1,
+               available_balance = COALESCE(available_balance, balance, 0) + $2,
+               updated_at = now()
+           WHERE id = $3`,
+          [nb, amt, req.params.id]
+        );
       }
-      await createAuditLog(req.user.id, 'add_transaction', 'account', a.id, null, {type,amount:amt,description,update_balance}, reason, req.ip);
+      await createAuditLog(req.user.id, 'add_transaction', 'account', a.id, null, { type, amount: amt, description, update_balance }, reason, req.ip);
       return { transaction: tx.rows[0] };
     });
     res.json({ success: true, ...result });
-  } catch (err) { res.status(400).json({ error: err.message || 'Failed' }); }
+  } catch (err) {
+    console.error('accounts/:id/transactions error:', err);
+    res.status(400).json({ error: err.message || 'Failed' });
+  }
 });
 
 // Admin: view audit logs
@@ -97,13 +144,15 @@ router.get('/api/admin/audit-logs', authMiddleware, adminMiddleware, async (req,
     let sql = `SELECT al.*, p.full_name as actor_name FROM audit_logs al LEFT JOIN profiles p ON p.id=al.actor_id`;
     const params = [];
     const conds = [];
-    if (target_type) { conds.push(`al.target_type=$${params.length+1}`); params.push(target_type); }
-    if (target_id) { conds.push(`al.target_id=$${params.length+1}`); params.push(target_id); }
+    if (target_type) { conds.push(`al.target_type=$${params.length + 1}`); params.push(target_type); }
+    if (target_id) { conds.push(`al.target_id=$${params.length + 1}`); params.push(target_id); }
     if (conds.length) sql += ` WHERE ${conds.join(' AND ')}`;
-    sql += ` ORDER BY al.created_at DESC LIMIT ${Math.min(parseInt(limit)||100, 500)}`;
+    sql += ` ORDER BY al.created_at DESC LIMIT ${Math.min(parseInt(limit) || 100, 500)}`;
     const { rows } = await query(sql, params);
     res.json({ audit_logs: rows });
-  } catch (err) { res.status(500).json({ error: 'Failed to fetch audit logs' }); }
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch audit logs' });
+  }
 });
 
 export default router;
