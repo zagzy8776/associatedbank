@@ -1,6 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
-import { AdminAuthProvider, useAdminAuth } from './context/AdminAuthContext';
+import { useAdminAuth } from './context/AdminAuthContext';
 import { Spinner } from './components/ui';
 import LandingPage from './pages/LandingPage';
 import AuthPage from './pages/AuthPage';
@@ -22,15 +22,16 @@ function SessionLoader() {
   );
 }
 
-// Customer route guard
-function Protected({ children }: { children: React.ReactNode }) {
+/** Customer routes — normal bank users only */
+function CustomerProtected({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
   if (loading) return <SessionLoader />;
   if (!user) return <Navigate to="/login" replace />;
+  // Promoted admins still use customer banking UI; they must use /admin/login for console
   return <>{children}</>;
 }
 
-// Admin route guard — uses separate admin auth
+/** Admin console — ONLY via rubicon_admin_token from /admin/login */
 function AdminProtected({ children }: { children: React.ReactNode }) {
   const { admin, loading } = useAdminAuth();
   if (loading) return <SessionLoader />;
@@ -38,50 +39,33 @@ function AdminProtected({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-// Customer routes (wrapped in customer auth)
-function CustomerRoutes() {
-  return (
-    <Routes>
-      <Route path="/" element={<LandingPage />} />
-      <Route path="/login" element={<AuthPage mode="login" />} />
-      <Route path="/signup" element={<AuthPage mode="signup" />} />
-      <Route path="/dashboard" element={<Protected><Dashboard /></Protected>} />
-      <Route path="/account/:id" element={<Protected><AccountDetail /></Protected>} />
-      <Route path="/account/:id/history" element={<Protected><TransactionHistoryPage /></Protected>} />
-      <Route path="/transfers" element={<Protected><TransferPage /></Protected>} />
-      <Route path="/deposits" element={<Protected><DepositPage /></Protected>} />
-      <Route path="/crypto" element={<Protected><CryptoPage /></Protected>} />
-      <Route path="/profile" element={<Protected><ProfilePage /></Protected>} />
-    </Routes>
-  );
-}
-
-// Admin routes (wrapped in admin auth)
-function AdminRoutes() {
-  return (
-    <Routes>
-      <Route path="/login" element={<AdminLoginPage />} />
-      <Route path="/*" element={<AdminProtected><AdminPanel /></AdminProtected>} />
-    </Routes>
-  );
+function AdminLoginGate() {
+  const { admin, loading } = useAdminAuth();
+  if (loading) return <SessionLoader />;
+  if (admin) return <Navigate to="/admin" replace />;
+  return <AdminLoginPage />;
 }
 
 export default function App() {
-  const { loading: customerLoading } = useAuth();
-
-  if (customerLoading) return <SessionLoader />;
-
   return (
     <Routes>
-      {/* Admin routes — completely separate */}
-      <Route path="/admin/*" element={
-        <AdminAuthProvider>
-          <AdminRoutes />
-        </AdminAuthProvider>
-      } />
+      {/* ── Strict admin console (separate credentials) ── */}
+      <Route path="/admin/login" element={<AdminLoginGate />} />
+      <Route path="/admin/*" element={<AdminProtected><AdminPanel /></AdminProtected>} />
 
-      {/* Customer routes */}
-      <Route path="/*" element={<CustomerRoutes />} />
+      {/* ── Customer banking ── */}
+      <Route path="/" element={<LandingPage />} />
+      <Route path="/login" element={<AuthPage mode="login" />} />
+      <Route path="/signup" element={<AuthPage mode="signup" />} />
+      <Route path="/dashboard" element={<CustomerProtected><Dashboard /></CustomerProtected>} />
+      <Route path="/account/:id" element={<CustomerProtected><AccountDetail /></CustomerProtected>} />
+      <Route path="/account/:id/history" element={<CustomerProtected><TransactionHistoryPage /></CustomerProtected>} />
+      <Route path="/transfers" element={<CustomerProtected><TransferPage /></CustomerProtected>} />
+      <Route path="/deposits" element={<CustomerProtected><DepositPage /></CustomerProtected>} />
+      <Route path="/crypto" element={<CustomerProtected><CryptoPage /></CustomerProtected>} />
+      <Route path="/profile" element={<CustomerProtected><ProfilePage /></CustomerProtected>} />
+
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }
