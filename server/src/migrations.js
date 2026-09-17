@@ -30,6 +30,8 @@ export async function runMigrations() {
     ['daily_limit', 'NUMERIC(24,2) DEFAULT 20000'],
     ['transaction_limit', 'NUMERIC(24,2) DEFAULT 5000'],
     ['monthly_limit', 'NUMERIC(24,2) DEFAULT 100000'],
+    ['account_type', "TEXT DEFAULT 'current'"],
+    ['routing_number', 'TEXT'],
   ];
   for (const [col, type] of accountCols) {
     await query(`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS ${col} ${type}`).catch(() => {});
@@ -38,11 +40,16 @@ export async function runMigrations() {
   await query(`ALTER TABLE accounts ALTER COLUMN balance TYPE NUMERIC(24,2)`).catch(() => {});
   await query(`ALTER TABLE accounts ALTER COLUMN available_balance TYPE NUMERIC(24,2)`).catch(() => {});
   await query(`UPDATE accounts SET available_balance = COALESCE(balance, 0) WHERE available_balance IS NULL`).catch(() => {});
+  // Backfill routing + type for existing accounts
+  await query(`UPDATE accounts SET account_type = COALESCE(account_type, 'current') WHERE account_type IS NULL`).catch(() => {});
+  await query(`UPDATE accounts SET routing_number = '04-00-26' WHERE currency = 'GBP' AND (routing_number IS NULL OR routing_number = '')`).catch(() => {});
+  await query(`UPDATE accounts SET routing_number = '026009593' WHERE currency = 'USD' AND (routing_number IS NULL OR routing_number = '')`).catch(() => {});
+  await query(`UPDATE accounts SET routing_number = '20041000' WHERE currency = 'EUR' AND (routing_number IS NULL OR routing_number = '')`).catch(() => {});
 
   // Widen transaction amounts too
   await query(`ALTER TABLE transactions ALTER COLUMN amount TYPE NUMERIC(24,2)`).catch(() => {});
 
-  // 3. Update generate_account_number() to SIM-XXX-NNNNNNNN format
+  // 3. Bank-style 12-digit account numbers (legacy SQL callers)
   await query(`
     CREATE OR REPLACE FUNCTION generate_account_number()
     RETURNS TEXT AS $$
@@ -51,9 +58,7 @@ export async function runMigrations() {
       exists_count INT;
     BEGIN
       LOOP
-        num := 'SIM-' ||
-               (ARRAY['USD','GBP','EUR','NGN'])[floor(random()*4+1)] || '-' ||
-               lpad(floor(random()*100000000)::TEXT, 8, '0');
+        num := lpad(floor(random()*1e12)::TEXT, 12, '0');
         SELECT COUNT(*) INTO exists_count FROM accounts WHERE account_number = num;
         EXIT WHEN exists_count = 0;
       END LOOP;
@@ -132,7 +137,7 @@ export async function runMigrations() {
   await query(`CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_notif_unread ON notifications(user_id, is_read) WHERE is_read = false;`);
 
-  // 8. audit_logs table — actor_id kept as UUID; helpers map system admin to fixed UUID
+  // 8. audit_logs table
   await query(`
     CREATE TABLE IF NOT EXISTS audit_logs (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
