@@ -385,7 +385,6 @@ export default function TransferPage() {
             setCopied(false);
           }}
           title="Transaction details"
-          description="Full record for this movement of funds."
         >
           {selectedTx && (
             <div className="space-y-5">
