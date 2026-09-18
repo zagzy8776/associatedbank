@@ -14,7 +14,6 @@ function generateWalletAddress(asset) {
   return `sim_${asset.toLowerCase()}_${uuidv4().replace(/-/g, '').slice(0, 16)}`;
 }
 
-// Customer: request crypto account
 router.post('/api/crypto', authMiddleware, async (req, res) => {
   try {
     const { asset } = req.body;
@@ -38,7 +37,6 @@ router.post('/api/crypto', authMiddleware, async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to create crypto request' }); }
 });
 
-// Customer: list crypto accounts
 router.get('/api/crypto', authMiddleware, async (req, res) => {
   try {
     const { rows } = await query(
@@ -48,7 +46,6 @@ router.get('/api/crypto', authMiddleware, async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Failed to fetch crypto accounts' }); }
 });
 
-// Customer: crypto transaction history
 router.get('/api/crypto/:id/transactions', authMiddleware, async (req, res) => {
   try {
     const acct = await query(
@@ -62,7 +59,6 @@ router.get('/api/crypto/:id/transactions', authMiddleware, async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Failed to fetch crypto transactions' }); }
 });
 
-// Admin: list all crypto accounts
 router.get('/api/admin/crypto', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const status = req.query.status;
@@ -76,7 +72,6 @@ router.get('/api/admin/crypto', authMiddleware, adminMiddleware, async (req, res
   } catch (err) { res.status(500).json({ error: 'Failed to fetch crypto accounts' }); }
 });
 
-// Admin: approve/reject/suspend crypto account
 router.patch('/api/admin/crypto/:id', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { status, admin_note } = req.body;
@@ -87,10 +82,17 @@ router.patch('/api/admin/crypto/:id', authMiddleware, adminMiddleware, async (re
     if (!cryptoRes.rows.length) return res.status(404).json({ error: 'Crypto account not found' });
     const crypto = cryptoRes.rows[0];
 
-    await query(
-      `UPDATE crypto_accounts SET status=$1, admin_id=$2, admin_note=$3, updated_at=now() WHERE id=$4`,
-      [status, req.user.id, admin_note || null, req.params.id]
-    );
+    try {
+      await query(
+        `UPDATE crypto_accounts SET status=$1, admin_id=$2, admin_note=$3, updated_at=now() WHERE id=$4`,
+        [status, req.user.id, admin_note || null, req.params.id]
+      );
+    } catch (_) {
+      await query(
+        `UPDATE crypto_accounts SET status=$1, admin_note=$2, updated_at=now() WHERE id=$3`,
+        [status, admin_note || null, req.params.id]
+      );
+    }
     await createNotification(crypto.customer_id, `crypto_${status}`,
       status === 'active' ? 'Crypto account approved' : `Crypto account ${status}`,
       `Your ${crypto.asset} account has been ${status}.`, { crypto_account_id: crypto.id });
@@ -100,7 +102,6 @@ router.patch('/api/admin/crypto/:id', authMiddleware, adminMiddleware, async (re
   } catch (err) { res.status(400).json({ error: err.message || 'Failed to update' }); }
 });
 
-// Admin: adjust crypto balance
 router.post('/api/admin/crypto/:id/adjust', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { amount, transaction_type, reason } = req.body;
