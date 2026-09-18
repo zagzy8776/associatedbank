@@ -28,6 +28,13 @@ interface Transfer {
   created_at: string;
 }
 
+function isIncoming(t: Transfer) {
+  const ty = (t.type || '').toLowerCase();
+  if (ty === 'transfer_in' || ty === 'deposit' || ty === 'credit') return true;
+  if (ty === 'transfer_out' || ty === 'withdrawal' || ty === 'debit') return false;
+  return parseFloat(t.amount) > 0 && ty !== 'transfer';
+}
+
 export default function TransferPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
@@ -84,11 +91,11 @@ export default function TransferPage() {
 
   const stats = useMemo(() => {
     const sent = transfers
-      .filter((t) => parseFloat(t.amount) < 0)
+      .filter((t) => !isIncoming(t))
       .reduce((s, t) => s + Math.abs(parseFloat(t.amount)), 0);
     const received = transfers
-      .filter((t) => parseFloat(t.amount) > 0)
-      .reduce((s, t) => s + parseFloat(t.amount), 0);
+      .filter((t) => isIncoming(t))
+      .reduce((s, t) => s + Math.abs(parseFloat(t.amount)), 0);
     return { sent, received, count: transfers.length };
   }, [transfers]);
 
@@ -280,7 +287,7 @@ export default function TransferPage() {
           <div className="space-y-3">
             {transfers.map((tx) => {
               const amt = parseFloat(tx.amount);
-              const isCredit = amt > 0;
+              const isCredit = isIncoming(tx);
               return (
                 <Card key={tx.id} className="p-4">
                   <div className="flex items-center gap-4">
