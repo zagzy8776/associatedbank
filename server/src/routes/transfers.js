@@ -7,6 +7,12 @@ import { Router } from 'express';
 import { query, withTransaction } from '../db.js';
 import { authMiddleware } from '../auth.js';
 import { createNotification } from '../helpers.js';
+import {
+  getUserContact,
+  emailTransferSent,
+  emailTransferReceived,
+  voidEmail,
+} from '../email.js';
 
 const router = Router();
 
@@ -30,14 +36,12 @@ async function tryInSavepoint(client, name, fn) {
   }
 }
 
-/** Insert a ledger row; tries several column/type shapes. Amount must be > 0. */
 async function insertLedger(client, spPrefix, {
   accountId, userId, type, amount, currency, description, reference,
 }) {
   const abs = Math.abs(Number(amount));
   if (!(abs > 0)) throw new Error('Invalid ledger amount');
 
-  // Prefer transfer_out / transfer_in; fall back to transfer / withdrawal / deposit
   const typeAttempts = [type];
   if (type === 'transfer_out') typeAttempts.push('withdrawal', 'transfer', 'debit');
   if (type === 'transfer_in') typeAttempts.push('deposit', 'transfer', 'credit');
@@ -72,7 +76,6 @@ async function insertLedger(client, spPrefix, {
     if (a3.ok) return a3.result;
   }
 
-  // Last resort: only required-looking columns
   const last = await tryInSavepoint(client, `${spPrefix}_z`, async () => {
     return client.query(
       `INSERT INTO transactions (account_id, type, amount, currency)
@@ -154,7 +157,6 @@ router.post('/api/transfers', authMiddleware, async (req, res) => {
         throw new Error('Recipient account is not active');
       }
 
-      // Debit sender balance
       await client.query(`UPDATE accounts SET balance = balance - $1 WHERE id = $2`, [
         amt,
         from_account_id,
@@ -259,6 +261,36 @@ router.post('/api/transfers', authMiddleware, async (req, res) => {
           reference: notifyPayload.ref,
         }
       ).catch(() => {});
+
+      const when = new Date().toUTCString();
+      voidEmail((async () => {
+        const sender = await getUserContact(notifyPayload.senderUserId);
+        if (sender?.email) {
+          await emailTransferSent({
+            to: sender.email,
+            fullName: sender.full_name,
+            amount: notifyPayload.amt,
+            currency: notifyPayload.currency,
+            toAccount: notifyPayload.toNumber,
+            reference: notifyPayload.ref,
+            when,
+          });
+        }
+        if (notifyPayload.recipientUserId) {
+          const recipient = await getUserContact(notifyPayload.recipientUserId);
+          if (recipient?.email) {
+            await emailTransferReceived({
+              to: recipient.email,
+              fullName: recipient.full_name,
+              amount: notifyPayload.amt,
+              currency: notifyPayload.currency,
+              fromAccount: notifyPayload.fromNumber,
+              reference: notifyPayload.ref,
+              when,
+            });
+          }
+        }
+      })());
     }
 
     res.json({ success: true, ...result });
