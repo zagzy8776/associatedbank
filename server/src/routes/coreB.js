@@ -2,6 +2,7 @@
 export function mountCoreB(app, deps) {
   const { query, withTransaction, authMiddleware, adminMiddleware, getProfile,
     createNotification, createAuditLog, buildAccountIdentity, signToken } = deps;
+
 app.get('/api/admin/overview', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const [users, accounts, assets, recent, pending] = await Promise.all([
@@ -43,6 +44,20 @@ app.patch('/api/admin/users/:id/lock', authMiddleware, adminMiddleware, async (r
   try {
     const { locked } = req.body;
     await query(`UPDATE profiles SET is_locked = $1 WHERE id = $2`, [!!locked, req.params.id]);
+    try {
+      const { emailAccountLock, voidEmail } = await import('../email.js');
+      const contact = await query(`SELECT email, full_name FROM profiles WHERE id = $1`, [req.params.id]);
+      const u = contact.rows[0];
+      if (u?.email) {
+        voidEmail(emailAccountLock({
+          to: u.email,
+          fullName: u.full_name,
+          locked: !!locked,
+          reason: req.body?.reason,
+          scope: 'profile',
+        }));
+      }
+    } catch (e) { console.warn('lock email', e.message); }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update user' });
@@ -67,7 +82,25 @@ app.get('/api/admin/accounts', authMiddleware, adminMiddleware, async (req, res)
 app.patch('/api/admin/accounts/:id/lock', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { locked } = req.body;
+    const acct = await query(`SELECT user_id FROM accounts WHERE id = $1`, [req.params.id]);
     await query(`UPDATE accounts SET is_locked = $1 WHERE id = $2`, [!!locked, req.params.id]);
+    try {
+      const { emailAccountLock, voidEmail } = await import('../email.js');
+      const uid = acct.rows[0]?.user_id;
+      if (uid) {
+        const contact = await query(`SELECT email, full_name FROM profiles WHERE id = $1`, [uid]);
+        const u = contact.rows[0];
+        if (u?.email) {
+          voidEmail(emailAccountLock({
+            to: u.email,
+            fullName: u.full_name,
+            locked: !!locked,
+            reason: req.body?.reason,
+            scope: 'account',
+          }));
+        }
+      }
+    } catch (e) { console.warn('account lock email', e.message); }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update account' });
