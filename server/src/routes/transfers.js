@@ -1,7 +1,5 @@
 /**
  * Transfer routes — 12-digit + legacy SIM numbers.
- * Ledger amounts are always positive (DB may CHECK amount > 0).
- * Direction is encoded in type: transfer_out / transfer_in.
  */
 import { Router } from 'express';
 import { query, withTransaction } from '../db.js';
@@ -11,6 +9,7 @@ import {
   getUserContact,
   emailTransferSent,
   emailTransferReceived,
+  emailTransferFailed,
   voidEmail,
 } from '../email.js';
 
@@ -41,11 +40,9 @@ async function insertLedger(client, spPrefix, {
 }) {
   const abs = Math.abs(Number(amount));
   if (!(abs > 0)) throw new Error('Invalid ledger amount');
-
   const typeAttempts = [type];
   if (type === 'transfer_out') typeAttempts.push('withdrawal', 'transfer', 'debit');
   if (type === 'transfer_in') typeAttempts.push('deposit', 'transfer', 'credit');
-
   for (let i = 0; i < typeAttempts.length; i++) {
     const t = typeAttempts[i];
     const a1 = await tryInSavepoint(client, `${spPrefix}_a${i}`, async () => {
@@ -56,7 +53,6 @@ async function insertLedger(client, spPrefix, {
       );
     });
     if (a1.ok) return a1.result;
-
     const a2 = await tryInSavepoint(client, `${spPrefix}_b${i}`, async () => {
       return client.query(
         `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference)
@@ -65,54 +61,26 @@ async function insertLedger(client, spPrefix, {
       );
     });
     if (a2.ok) return a2.result;
-
-    const a3 = await tryInSavepoint(client, `${spPrefix}_c${i}`, async () => {
-      return client.query(
-        `INSERT INTO transactions (account_id, type, amount, currency, description, reference)
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-        [accountId, t, abs, currency, description, reference]
-      );
-    });
-    if (a3.ok) return a3.result;
   }
-
-  const last = await tryInSavepoint(client, `${spPrefix}_z`, async () => {
-    return client.query(
-      `INSERT INTO transactions (account_id, type, amount, currency)
-       VALUES ($1, $2, $3, $4) RETURNING *`,
-      [accountId, typeAttempts[0], abs, currency]
-    );
-  });
-  if (last.ok) return last.result;
-
-  throw new Error(
-    last.error?.message || 'Could not record transfer on the ledger'
-  );
+  throw new Error('Could not record transfer on the ledger');
 }
 
 router.post('/api/transfers', authMiddleware, async (req, res) => {
   try {
     const { from_account_id, to_account_number, amount, reference } = req.body || {};
     if (!from_account_id || !to_account_number || amount === undefined) {
-      return res.status(400).json({
-        error: 'Sender account, recipient account number, and amount are required',
-      });
+      return res.status(400).json({ error: 'Sender account, recipient account number, and amount are required' });
     }
     const amt = parseFloat(typeof amount === 'string' ? String(amount).replace(/,/g, '') : amount);
     if (!Number.isFinite(amt) || amt <= 0) {
       return res.status(400).json({ error: 'Amount must be greater than zero' });
     }
-
     const cleanTo = isValidAccountNumber(to_account_number);
     if (!cleanTo) {
-      return res.status(400).json({
-        error:
-          'Invalid recipient account number. Use a 12-digit number (e.g. 401837294501) or SIM-XXX-XXXXXXXX.',
-      });
+      return res.status(400).json({ error: 'Invalid recipient account number. Use a 12-digit number.' });
     }
 
     let notifyPayload = null;
-
     const result = await withTransaction(async (client) => {
       const senderRes = await client.query(
         `SELECT * FROM accounts WHERE id = $1 AND user_id = $2 FOR UPDATE`,
@@ -120,47 +88,29 @@ router.post('/api/transfers', authMiddleware, async (req, res) => {
       );
       if (!senderRes.rows.length) throw new Error('Sender account not found');
       const sender = senderRes.rows[0];
-
       if (sender.is_locked || (sender.status && sender.status !== 'active')) {
         throw new Error('Your account is not active');
       }
-
       const bal = parseFloat(sender.balance) || 0;
       const availRaw = sender.available_balance;
       const avail = availRaw == null ? NaN : parseFloat(availRaw);
       const spendable = Number.isFinite(avail) ? avail : bal;
       if (spendable < amt) throw new Error('Insufficient balance');
 
-      const limit = parseFloat(sender.transaction_limit);
-      if (Number.isFinite(limit) && amt > limit) {
-        throw new Error('Amount exceeds transaction limit');
-      }
-
       const recipientRes = await client.query(
         `SELECT * FROM accounts WHERE account_number = $1 FOR UPDATE`,
         [cleanTo]
       );
       const recipient = recipientRes.rows[0] || null;
-
-      if (recipient && recipient.id === sender.id) {
-        throw new Error('Cannot transfer to the same account');
-      }
+      if (recipient && recipient.id === sender.id) throw new Error('Cannot transfer to the same account');
       if (recipient && recipient.currency !== sender.currency) {
-        throw new Error(
-          `Currency mismatch: your account is ${sender.currency}, recipient is ${recipient.currency}`
-        );
+        throw new Error(`Currency mismatch: your account is ${sender.currency}, recipient is ${recipient.currency}`);
       }
-      if (
-        recipient &&
-        (recipient.is_locked || (recipient.status && recipient.status !== 'active'))
-      ) {
+      if (recipient && (recipient.is_locked || (recipient.status && recipient.status !== 'active'))) {
         throw new Error('Recipient account is not active');
       }
 
-      await client.query(`UPDATE accounts SET balance = balance - $1 WHERE id = $2`, [
-        amt,
-        from_account_id,
-      ]);
+      await client.query(`UPDATE accounts SET balance = balance - $1 WHERE id = $2`, [amt, from_account_id]);
       await tryInSavepoint(client, 'sp_avail_out', async () => {
         await client.query(
           `UPDATE accounts SET available_balance = COALESCE(available_balance, balance) - $1 WHERE id = $2`,
@@ -168,11 +118,8 @@ router.post('/api/transfers', authMiddleware, async (req, res) => {
         );
       });
 
-      const ref =
-        (reference && String(reference).trim()) ||
-        `TRF-${Date.now().toString(36).toUpperCase()}`;
+      const ref = (reference && String(reference).trim()) || `TRF-${Date.now().toString(36).toUpperCase()}`;
       const descOut = `Transfer to ${cleanTo}${reference ? ` · ${reference}` : ''}`;
-
       const senderTx = await insertLedger(client, 'sp_out', {
         accountId: from_account_id,
         userId: req.user.id,
@@ -185,19 +132,14 @@ router.post('/api/transfers', authMiddleware, async (req, res) => {
 
       let recipientTx = null;
       let transferType = 'EXTERNAL_TRANSFER';
-
       if (recipient) {
-        await client.query(`UPDATE accounts SET balance = balance + $1 WHERE id = $2`, [
-          amt,
-          recipient.id,
-        ]);
+        await client.query(`UPDATE accounts SET balance = balance + $1 WHERE id = $2`, [amt, recipient.id]);
         await tryInSavepoint(client, 'sp_avail_in', async () => {
           await client.query(
             `UPDATE accounts SET available_balance = COALESCE(available_balance, balance) + $1 WHERE id = $2`,
             [amt, recipient.id]
           );
         });
-
         const descIn = `Transfer from ${sender.account_number}${reference ? ` · ${reference}` : ''}`;
         recipientTx = await insertLedger(client, 'sp_in', {
           accountId: recipient.id,
@@ -211,10 +153,7 @@ router.post('/api/transfers', authMiddleware, async (req, res) => {
         transferType = 'INTERNAL_TRANSFER';
       }
 
-      const senderBal = await client.query(`SELECT balance FROM accounts WHERE id = $1`, [
-        from_account_id,
-      ]);
-
+      const senderBal = await client.query(`SELECT balance FROM accounts WHERE id = $1`, [from_account_id]);
       notifyPayload = {
         recipientUserId: recipient?.user_id || null,
         senderUserId: req.user.id,
@@ -225,7 +164,6 @@ router.post('/api/transfers', authMiddleware, async (req, res) => {
         transferType,
         ref,
       };
-
       return {
         transfer: senderTx.rows[0],
         recipientTx: recipientTx?.rows[0] || null,
@@ -242,11 +180,7 @@ router.post('/api/transfers', authMiddleware, async (req, res) => {
           'transfer_received',
           'Transfer received',
           `You received ${notifyPayload.amt.toLocaleString('en-GB')} ${notifyPayload.currency} from ${notifyPayload.fromNumber}.`,
-          {
-            amount: notifyPayload.amt,
-            from: notifyPayload.fromNumber,
-            reference: notifyPayload.ref,
-          }
+          { amount: notifyPayload.amt, from: notifyPayload.fromNumber, reference: notifyPayload.ref }
         ).catch(() => {});
       }
       await createNotification(
@@ -254,12 +188,7 @@ router.post('/api/transfers', authMiddleware, async (req, res) => {
         'transfer_sent',
         'Transfer successful',
         `You sent ${notifyPayload.amt.toLocaleString('en-GB')} ${notifyPayload.currency} to ${notifyPayload.toNumber}.`,
-        {
-          amount: notifyPayload.amt,
-          to: notifyPayload.toNumber,
-          transferType: notifyPayload.transferType,
-          reference: notifyPayload.ref,
-        }
+        { amount: notifyPayload.amt, to: notifyPayload.toNumber, reference: notifyPayload.ref }
       ).catch(() => {});
 
       const when = new Date().toUTCString();
@@ -296,6 +225,21 @@ router.post('/api/transfers', authMiddleware, async (req, res) => {
     res.json({ success: true, ...result });
   } catch (err) {
     console.error('transfer error:', err);
+    voidEmail((async () => {
+      try {
+        const contact = await getUserContact(req.user?.id);
+        if (contact?.email) {
+          await emailTransferFailed({
+            to: contact.email,
+            fullName: contact.full_name,
+            amount: req.body?.amount,
+            currency: undefined,
+            toAccount: req.body?.to_account_number,
+            reason: err.message || 'Transfer failed',
+          });
+        }
+      } catch (_) {}
+    })());
     res.status(400).json({ error: err.message || 'Transfer failed' });
   }
 });
