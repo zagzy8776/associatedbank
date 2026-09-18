@@ -1,6 +1,7 @@
 /**
  * Transfer routes — 12-digit + legacy SIM numbers.
- * Optional SQL uses SAVEPOINTs so one failure does not abort the whole TX.
+ * Ledger amounts are always positive (DB may CHECK amount > 0).
+ * Direction is encoded in type: transfer_out / transfer_in.
  */
 import { Router } from 'express';
 import { query, withTransaction } from '../db.js';
@@ -16,7 +17,6 @@ function isValidAccountNumber(num) {
   return null;
 }
 
-/** Run fn inside a SAVEPOINT so failure does not abort the outer transaction. */
 async function tryInSavepoint(client, name, fn) {
   await client.query(`SAVEPOINT ${name}`);
   try {
@@ -28,6 +28,63 @@ async function tryInSavepoint(client, name, fn) {
     console.warn(`savepoint ${name}:`, err.message);
     return { ok: false, error: err };
   }
+}
+
+/** Insert a ledger row; tries several column/type shapes. Amount must be > 0. */
+async function insertLedger(client, spPrefix, {
+  accountId, userId, type, amount, currency, description, reference,
+}) {
+  const abs = Math.abs(Number(amount));
+  if (!(abs > 0)) throw new Error('Invalid ledger amount');
+
+  // Prefer transfer_out / transfer_in; fall back to transfer / withdrawal / deposit
+  const typeAttempts = [type];
+  if (type === 'transfer_out') typeAttempts.push('withdrawal', 'transfer', 'debit');
+  if (type === 'transfer_in') typeAttempts.push('deposit', 'transfer', 'credit');
+
+  for (let i = 0; i < typeAttempts.length; i++) {
+    const t = typeAttempts[i];
+    const a1 = await tryInSavepoint(client, `${spPrefix}_a${i}`, async () => {
+      return client.query(
+        `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'completed') RETURNING *`,
+        [accountId, userId, t, abs, currency, description, reference]
+      );
+    });
+    if (a1.ok) return a1.result;
+
+    const a2 = await tryInSavepoint(client, `${spPrefix}_b${i}`, async () => {
+      return client.query(
+        `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+        [accountId, userId, t, abs, currency, description, reference]
+      );
+    });
+    if (a2.ok) return a2.result;
+
+    const a3 = await tryInSavepoint(client, `${spPrefix}_c${i}`, async () => {
+      return client.query(
+        `INSERT INTO transactions (account_id, type, amount, currency, description, reference)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+        [accountId, t, abs, currency, description, reference]
+      );
+    });
+    if (a3.ok) return a3.result;
+  }
+
+  // Last resort: only required-looking columns
+  const last = await tryInSavepoint(client, `${spPrefix}_z`, async () => {
+    return client.query(
+      `INSERT INTO transactions (account_id, type, amount, currency)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [accountId, typeAttempts[0], abs, currency]
+    );
+  });
+  if (last.ok) return last.result;
+
+  throw new Error(
+    last.error?.message || 'Could not record transfer on the ledger'
+  );
 }
 
 router.post('/api/transfers', authMiddleware, async (req, res) => {
@@ -97,13 +154,11 @@ router.post('/api/transfers', authMiddleware, async (req, res) => {
         throw new Error('Recipient account is not active');
       }
 
-      // 1) Debit balance (required)
+      // Debit sender balance
       await client.query(`UPDATE accounts SET balance = balance - $1 WHERE id = $2`, [
         amt,
         from_account_id,
       ]);
-
-      // 2) Optional available_balance — SAVEPOINT so failure cannot abort TX
       await tryInSavepoint(client, 'sp_avail_out', async () => {
         await client.query(
           `UPDATE accounts SET available_balance = COALESCE(available_balance, balance) - $1 WHERE id = $2`,
@@ -114,30 +169,17 @@ router.post('/api/transfers', authMiddleware, async (req, res) => {
       const ref =
         (reference && String(reference).trim()) ||
         `TRF-${Date.now().toString(36).toUpperCase()}`;
-      const descOut = `Transfer to ${cleanTo}`;
+      const descOut = `Transfer to ${cleanTo}${reference ? ` · ${reference}` : ''}`;
 
-      // 3) Sender ledger — always with user_id; try columns with SAVEPOINTS
-      let senderTx = null;
-      const tx1 = await tryInSavepoint(client, 'sp_tx_out1', async () => {
-        return client.query(
-          `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference, status)
-           VALUES ($1, $2, 'transfer', $3, $4, $5, $6, 'completed') RETURNING *`,
-          [from_account_id, req.user.id, -Math.abs(amt), sender.currency, descOut, ref]
-        );
+      const senderTx = await insertLedger(client, 'sp_out', {
+        accountId: from_account_id,
+        userId: req.user.id,
+        type: 'transfer_out',
+        amount: amt,
+        currency: sender.currency,
+        description: descOut,
+        reference: ref,
       });
-      if (tx1.ok) {
-        senderTx = tx1.result;
-      } else {
-        const tx2 = await tryInSavepoint(client, 'sp_tx_out2', async () => {
-          return client.query(
-            `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference)
-             VALUES ($1, $2, 'transfer', $3, $4, $5, $6) RETURNING *`,
-            [from_account_id, req.user.id, -Math.abs(amt), sender.currency, descOut, ref]
-          );
-        });
-        if (!tx2.ok) throw new Error('Could not record outgoing transfer');
-        senderTx = tx2.result;
-      }
 
       let recipientTx = null;
       let transferType = 'EXTERNAL_TRANSFER';
@@ -154,26 +196,16 @@ router.post('/api/transfers', authMiddleware, async (req, res) => {
           );
         });
 
-        const descIn = `Transfer from ${sender.account_number}`;
-        const rtx1 = await tryInSavepoint(client, 'sp_tx_in1', async () => {
-          return client.query(
-            `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference, status)
-             VALUES ($1, $2, 'transfer', $3, $4, $5, $6, 'completed') RETURNING *`,
-            [recipient.id, recipient.user_id, Math.abs(amt), recipient.currency, descIn, ref]
-          );
+        const descIn = `Transfer from ${sender.account_number}${reference ? ` · ${reference}` : ''}`;
+        recipientTx = await insertLedger(client, 'sp_in', {
+          accountId: recipient.id,
+          userId: recipient.user_id,
+          type: 'transfer_in',
+          amount: amt,
+          currency: recipient.currency,
+          description: descIn,
+          reference: ref,
         });
-        if (rtx1.ok) {
-          recipientTx = rtx1.result;
-        } else {
-          const rtx2 = await tryInSavepoint(client, 'sp_tx_in2', async () => {
-            return client.query(
-              `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference)
-               VALUES ($1, $2, 'transfer', $3, $4, $5, $6) RETURNING *`,
-              [recipient.id, recipient.user_id, Math.abs(amt), recipient.currency, descIn, ref]
-            );
-          });
-          if (rtx2.ok) recipientTx = rtx2.result;
-        }
         transferType = 'INTERNAL_TRANSFER';
       }
 
@@ -201,7 +233,6 @@ router.post('/api/transfers', authMiddleware, async (req, res) => {
       };
     });
 
-    // Notifications outside the money transaction (never block the transfer)
     if (notifyPayload) {
       if (notifyPayload.recipientUserId) {
         await createNotification(
@@ -243,7 +274,11 @@ router.get('/api/transfers', authMiddleware, async (req, res) => {
     let sql = `SELECT t.*, a.account_number, a.currency as account_currency
                FROM transactions t
                JOIN accounts a ON a.id = t.account_id
-               WHERE a.user_id = $1 AND (t.type = 'transfer' OR t.description ILIKE '%transfer%')`;
+               WHERE a.user_id = $1
+                 AND (
+                   t.type IN ('transfer', 'transfer_out', 'transfer_in', 'withdrawal', 'deposit')
+                   OR t.description ILIKE '%transfer%'
+                 )`;
     const params = [req.user.id];
     if (account_id) {
       sql += ` AND t.account_id = $2`;
