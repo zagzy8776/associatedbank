@@ -1,5 +1,6 @@
 /**
- * Transfer routes — supports 12-digit Rubicon numbers and legacy SIM-XXX-########.
+ * Transfer routes — 12-digit + legacy SIM numbers.
+ * Optional SQL uses SAVEPOINTs so one failure does not abort the whole TX.
  */
 import { Router } from 'express';
 import { query, withTransaction } from '../db.js';
@@ -8,7 +9,6 @@ import { createNotification } from '../helpers.js';
 
 const router = Router();
 
-/** Accept new 12-digit numbers OR legacy SIM-USD-12345678 */
 function isValidAccountNumber(num) {
   const n = String(num || '').replace(/\s+/g, '').trim();
   if (/^\d{10,14}$/.test(n)) return n;
@@ -16,11 +16,27 @@ function isValidAccountNumber(num) {
   return null;
 }
 
+/** Run fn inside a SAVEPOINT so failure does not abort the outer transaction. */
+async function tryInSavepoint(client, name, fn) {
+  await client.query(`SAVEPOINT ${name}`);
+  try {
+    const result = await fn();
+    await client.query(`RELEASE SAVEPOINT ${name}`);
+    return { ok: true, result };
+  } catch (err) {
+    await client.query(`ROLLBACK TO SAVEPOINT ${name}`);
+    console.warn(`savepoint ${name}:`, err.message);
+    return { ok: false, error: err };
+  }
+}
+
 router.post('/api/transfers', authMiddleware, async (req, res) => {
   try {
     const { from_account_id, to_account_number, amount, reference } = req.body || {};
     if (!from_account_id || !to_account_number || amount === undefined) {
-      return res.status(400).json({ error: 'Sender account, recipient account number, and amount are required' });
+      return res.status(400).json({
+        error: 'Sender account, recipient account number, and amount are required',
+      });
     }
     const amt = parseFloat(typeof amount === 'string' ? String(amount).replace(/,/g, '') : amount);
     if (!Number.isFinite(amt) || amt <= 0) {
@@ -30,9 +46,12 @@ router.post('/api/transfers', authMiddleware, async (req, res) => {
     const cleanTo = isValidAccountNumber(to_account_number);
     if (!cleanTo) {
       return res.status(400).json({
-        error: 'Invalid recipient account number. Use a 12-digit number (e.g. 401837294501) or SIM-XXX-XXXXXXXX.',
+        error:
+          'Invalid recipient account number. Use a 12-digit number (e.g. 401837294501) or SIM-XXX-XXXXXXXX.',
       });
     }
+
+    let notifyPayload = null;
 
     const result = await withTransaction(async (client) => {
       const senderRes = await client.query(
@@ -47,7 +66,8 @@ router.post('/api/transfers', authMiddleware, async (req, res) => {
       }
 
       const bal = parseFloat(sender.balance) || 0;
-      const avail = parseFloat(sender.available_balance);
+      const availRaw = sender.available_balance;
+      const avail = availRaw == null ? NaN : parseFloat(availRaw);
       const spendable = Number.isFinite(avail) ? avail : bal;
       if (spendable < amt) throw new Error('Insufficient balance');
 
@@ -66,84 +86,111 @@ router.post('/api/transfers', authMiddleware, async (req, res) => {
         throw new Error('Cannot transfer to the same account');
       }
       if (recipient && recipient.currency !== sender.currency) {
-        throw new Error(`Currency mismatch: your account is ${sender.currency}, recipient is ${recipient.currency}`);
+        throw new Error(
+          `Currency mismatch: your account is ${sender.currency}, recipient is ${recipient.currency}`
+        );
       }
-      if (recipient && (recipient.is_locked || (recipient.status && recipient.status !== 'active'))) {
+      if (
+        recipient &&
+        (recipient.is_locked || (recipient.status && recipient.status !== 'active'))
+      ) {
         throw new Error('Recipient account is not active');
       }
 
-      await client.query(`UPDATE accounts SET balance = balance - $1 WHERE id = $2`, [amt, from_account_id]);
-      try {
+      // 1) Debit balance (required)
+      await client.query(`UPDATE accounts SET balance = balance - $1 WHERE id = $2`, [
+        amt,
+        from_account_id,
+      ]);
+
+      // 2) Optional available_balance — SAVEPOINT so failure cannot abort TX
+      await tryInSavepoint(client, 'sp_avail_out', async () => {
         await client.query(
           `UPDATE accounts SET available_balance = COALESCE(available_balance, balance) - $1 WHERE id = $2`,
           [amt, from_account_id]
         );
-      } catch (_) {}
+      });
 
-      const ref = (reference && String(reference).trim()) || `TRF-${Date.now().toString(36).toUpperCase()}`;
+      const ref =
+        (reference && String(reference).trim()) ||
+        `TRF-${Date.now().toString(36).toUpperCase()}`;
       const descOut = `Transfer to ${cleanTo}`;
 
-      let senderTx;
-      try {
-        senderTx = await client.query(
+      // 3) Sender ledger — always with user_id; try columns with SAVEPOINTS
+      let senderTx = null;
+      const tx1 = await tryInSavepoint(client, 'sp_tx_out1', async () => {
+        return client.query(
           `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference, status)
            VALUES ($1, $2, 'transfer', $3, $4, $5, $6, 'completed') RETURNING *`,
           [from_account_id, req.user.id, -Math.abs(amt), sender.currency, descOut, ref]
         );
-      } catch (_) {
-        senderTx = await client.query(
-          `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference)
-           VALUES ($1, $2, 'transfer', $3, $4, $5, $6) RETURNING *`,
-          [from_account_id, req.user.id, -Math.abs(amt), sender.currency, descOut, ref]
-        );
+      });
+      if (tx1.ok) {
+        senderTx = tx1.result;
+      } else {
+        const tx2 = await tryInSavepoint(client, 'sp_tx_out2', async () => {
+          return client.query(
+            `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference)
+             VALUES ($1, $2, 'transfer', $3, $4, $5, $6) RETURNING *`,
+            [from_account_id, req.user.id, -Math.abs(amt), sender.currency, descOut, ref]
+          );
+        });
+        if (!tx2.ok) throw new Error('Could not record outgoing transfer');
+        senderTx = tx2.result;
       }
 
       let recipientTx = null;
       let transferType = 'EXTERNAL_TRANSFER';
 
       if (recipient) {
-        await client.query(`UPDATE accounts SET balance = balance + $1 WHERE id = $2`, [amt, recipient.id]);
-        try {
+        await client.query(`UPDATE accounts SET balance = balance + $1 WHERE id = $2`, [
+          amt,
+          recipient.id,
+        ]);
+        await tryInSavepoint(client, 'sp_avail_in', async () => {
           await client.query(
             `UPDATE accounts SET available_balance = COALESCE(available_balance, balance) + $1 WHERE id = $2`,
             [amt, recipient.id]
           );
-        } catch (_) {}
+        });
 
         const descIn = `Transfer from ${sender.account_number}`;
-        try {
-          recipientTx = await client.query(
+        const rtx1 = await tryInSavepoint(client, 'sp_tx_in1', async () => {
+          return client.query(
             `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference, status)
              VALUES ($1, $2, 'transfer', $3, $4, $5, $6, 'completed') RETURNING *`,
             [recipient.id, recipient.user_id, Math.abs(amt), recipient.currency, descIn, ref]
           );
-        } catch (_) {
-          recipientTx = await client.query(
-            `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference)
-             VALUES ($1, $2, 'transfer', $3, $4, $5, $6) RETURNING *`,
-            [recipient.id, recipient.user_id, Math.abs(amt), recipient.currency, descIn, ref]
-          );
+        });
+        if (rtx1.ok) {
+          recipientTx = rtx1.result;
+        } else {
+          const rtx2 = await tryInSavepoint(client, 'sp_tx_in2', async () => {
+            return client.query(
+              `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference)
+               VALUES ($1, $2, 'transfer', $3, $4, $5, $6) RETURNING *`,
+              [recipient.id, recipient.user_id, Math.abs(amt), recipient.currency, descIn, ref]
+            );
+          });
+          if (rtx2.ok) recipientTx = rtx2.result;
         }
         transferType = 'INTERNAL_TRANSFER';
-
-        await createNotification(
-          recipient.user_id,
-          'transfer_received',
-          'Transfer received',
-          `You received ${amt.toLocaleString('en-GB')} ${sender.currency} from ${sender.account_number}.`,
-          { amount: amt, from: sender.account_number, reference: ref }
-        );
       }
 
-      await createNotification(
-        req.user.id,
-        'transfer_sent',
-        'Transfer successful',
-        `You sent ${amt.toLocaleString('en-GB')} ${sender.currency} to ${cleanTo}.`,
-        { amount: amt, to: cleanTo, transferType, reference: ref }
-      );
+      const senderBal = await client.query(`SELECT balance FROM accounts WHERE id = $1`, [
+        from_account_id,
+      ]);
 
-      const senderBal = await client.query(`SELECT balance FROM accounts WHERE id = $1`, [from_account_id]);
+      notifyPayload = {
+        recipientUserId: recipient?.user_id || null,
+        senderUserId: req.user.id,
+        amt,
+        currency: sender.currency,
+        fromNumber: sender.account_number,
+        toNumber: cleanTo,
+        transferType,
+        ref,
+      };
 
       return {
         transfer: senderTx.rows[0],
@@ -153,6 +200,35 @@ router.post('/api/transfers', authMiddleware, async (req, res) => {
         currency: sender.currency,
       };
     });
+
+    // Notifications outside the money transaction (never block the transfer)
+    if (notifyPayload) {
+      if (notifyPayload.recipientUserId) {
+        await createNotification(
+          notifyPayload.recipientUserId,
+          'transfer_received',
+          'Transfer received',
+          `You received ${notifyPayload.amt.toLocaleString('en-GB')} ${notifyPayload.currency} from ${notifyPayload.fromNumber}.`,
+          {
+            amount: notifyPayload.amt,
+            from: notifyPayload.fromNumber,
+            reference: notifyPayload.ref,
+          }
+        ).catch(() => {});
+      }
+      await createNotification(
+        notifyPayload.senderUserId,
+        'transfer_sent',
+        'Transfer successful',
+        `You sent ${notifyPayload.amt.toLocaleString('en-GB')} ${notifyPayload.currency} to ${notifyPayload.toNumber}.`,
+        {
+          amount: notifyPayload.amt,
+          to: notifyPayload.toNumber,
+          transferType: notifyPayload.transferType,
+          reference: notifyPayload.ref,
+        }
+      ).catch(() => {});
+    }
 
     res.json({ success: true, ...result });
   } catch (err) {
