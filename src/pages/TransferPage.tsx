@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, formatMoney } from '../lib/api';
 import { currencyMeta } from '../lib/currencies';
-import { maskAccountNumber, formatRelativeDay } from '../lib/format';
+import { maskAccountNumber, formatRelativeDay, formatDate } from '../lib/format';
 import {
-  Alert, Button, Card, EmptyState, Input, Modal, PageHeader, Select,
+  Alert, Badge, Button, Card, EmptyState, Input, Modal, PageHeader, Select,
   SectionHeading, Skeleton, SkeletonCard, StatusBadge,
 } from '../components/ui';
-import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Clock, Send, Wallet } from 'lucide-react';
+import {
+  ArrowDownLeft, ArrowLeftRight, ArrowUpRight, CheckCircle2, Clock,
+  Copy, Hash, Receipt, Send, Wallet,
+} from 'lucide-react';
 import { cx } from '../lib/designTokens';
 
 interface Account {
@@ -18,21 +21,46 @@ interface Account {
   status?: string;
   is_locked?: boolean;
 }
+
 interface Transfer {
   id: string;
   type: string;
   amount: string;
   currency: string;
   description?: string;
+  reference?: string;
   status?: string;
   created_at: string;
+  account_number?: string;
+  account_id?: string;
 }
 
 function isIncoming(t: Transfer) {
   const ty = (t.type || '').toLowerCase();
-  if (ty === 'transfer_in' || ty === 'deposit' || ty === 'credit') return true;
-  if (ty === 'transfer_out' || ty === 'withdrawal' || ty === 'debit') return false;
+  if (ty === 'transfer_in' || ty === 'deposit' || ty === 'credit' || ty === 'admin_credit') return true;
+  if (ty === 'transfer_out' || ty === 'withdrawal' || ty === 'debit' || ty === 'admin_debit') return false;
   return parseFloat(t.amount) > 0 && ty !== 'transfer';
+}
+
+function typeLabel(t: Transfer) {
+  const ty = (t.type || '').toLowerCase();
+  if (ty === 'transfer_out' || ty === 'withdrawal') return 'Outgoing transfer';
+  if (ty === 'transfer_in') return 'Incoming transfer';
+  if (ty === 'deposit' || ty === 'admin_credit') return 'Deposit';
+  if (ty === 'debit' || ty === 'admin_debit') return 'Debit';
+  if (isIncoming(t)) return 'Received';
+  return 'Sent';
+}
+
+function DetailRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex items-start justify-between gap-4 py-3 border-b border-line-subtle last:border-0">
+      <span className="text-caption text-content-muted shrink-0">{label}</span>
+      <span className={cx('text-sm text-right break-all', mono && 'font-mono text-xs')}>
+        {value}
+      </span>
+    </div>
+  );
 }
 
 export default function TransferPage() {
@@ -41,6 +69,7 @@ export default function TransferPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showModal, setShowModal] = useState(false);
+  const [selectedTx, setSelectedTx] = useState<Transfer | null>(null);
   const [fromAccount, setFromAccount] = useState('');
   const [toNumber, setToNumber] = useState('');
   const [amount, setAmount] = useState('');
@@ -48,6 +77,7 @@ export default function TransferPage() {
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState('');
   const [success, setSuccess] = useState('');
+  const [copied, setCopied] = useState(false);
 
   const load = useCallback(async () => {
     setError('');
@@ -105,6 +135,16 @@ export default function TransferPage() {
     if (!fromAccount && usableAccounts[0]) setFromAccount(usableAccounts[0].id);
     setFormError('');
     setShowModal(true);
+  };
+
+  const copyId = async (id: string) => {
+    try {
+      await navigator.clipboard.writeText(id);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* ignore */
+    }
   };
 
   const handleTransfer = async () => {
@@ -281,50 +321,141 @@ export default function TransferPage() {
                 Send Money
               </Button>
             }
-            hint="Internal transfers between Rubicon accounts are instant."
+            hint="Tap any transaction to view full details."
           />
         ) : (
           <div className="space-y-3">
             {transfers.map((tx) => {
               const amt = parseFloat(tx.amount);
-              const isCredit = isIncoming(tx);
+              const credit = isIncoming(tx);
               return (
-                <Card key={tx.id} className="p-4">
-                  <div className="flex items-center gap-4">
-                    <span
-                      className={cx(
-                        'w-11 h-11 rounded-card flex items-center justify-center shrink-0',
-                        isCredit ? 'bg-emerald-500/10' : 'bg-red-500/10',
-                      )}
-                    >
-                      {isCredit ? (
-                        <ArrowDownLeft className="w-5 h-5 text-emerald-400" />
-                      ) : (
-                        <ArrowUpRight className="w-5 h-5 text-red-400" />
-                      )}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <p className="text-sm font-semibold">
-                          {isCredit ? 'Received' : 'Sent'}{' '}
-                          {formatMoney(Math.abs(amt), tx.currency)}
+                <button
+                  key={tx.id}
+                  type="button"
+                  onClick={() => setSelectedTx(tx)}
+                  className="w-full text-left"
+                >
+                  <Card className="p-4 transition-colors hover:border-line-strong hover:bg-surface-raised/60">
+                    <div className="flex items-center gap-4">
+                      <span
+                        className={cx(
+                          'w-11 h-11 rounded-card flex items-center justify-center shrink-0',
+                          credit ? 'bg-emerald-500/10' : 'bg-red-500/10',
+                        )}
+                      >
+                        {credit ? (
+                          <ArrowDownLeft className="w-5 h-5 text-emerald-400" />
+                        ) : (
+                          <ArrowUpRight className="w-5 h-5 text-red-400" />
+                        )}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-sm font-semibold">
+                            {credit ? 'Received' : 'Sent'}{' '}
+                            {formatMoney(Math.abs(amt), tx.currency)}
+                          </p>
+                          {tx.status && <StatusBadge status={tx.status} />}
+                        </div>
+                        <p className="text-caption text-content-muted mt-0.5 truncate">
+                          {tx.description || (credit ? 'Incoming transfer' : 'Outgoing transfer')}
                         </p>
-                        {tx.status && <StatusBadge status={tx.status} />}
+                        <p className="text-micro text-content-muted mt-0.5">
+                          {formatRelativeDay(tx.created_at)}
+                        </p>
                       </div>
-                      <p className="text-caption text-content-muted mt-0.5 truncate">
-                        {tx.description || (isCredit ? 'Incoming transfer' : 'Outgoing transfer')}
-                      </p>
-                      <p className="text-micro text-content-muted mt-0.5">
-                        {formatRelativeDay(tx.created_at)}
-                      </p>
+                      <span className="text-content-muted text-xs shrink-0">Details →</span>
                     </div>
-                  </div>
-                </Card>
+                  </Card>
+                </button>
               );
             })}
           </div>
         )}
 
+        {/* ── Transaction detail ── */}
+        <Modal
+          open={selectedTx !== null}
+          onClose={() => {
+            setSelectedTx(null);
+            setCopied(false);
+          }}
+          title="Transaction details"
+          description="Full record for this movement of funds."
+        >
+          {selectedTx && (
+            <div className="space-y-5">
+              <div className="text-center py-4 rounded-card border border-line-subtle bg-surface-raised/40">
+                <div
+                  className={cx(
+                    'mx-auto w-12 h-12 rounded-full flex items-center justify-center mb-3',
+                    isIncoming(selectedTx) ? 'bg-emerald-500/15' : 'bg-red-500/15',
+                  )}
+                >
+                  {isIncoming(selectedTx) ? (
+                    <ArrowDownLeft className="w-6 h-6 text-emerald-400" />
+                  ) : (
+                    <ArrowUpRight className="w-6 h-6 text-red-400" />
+                  )}
+                </div>
+                <p
+                  className={cx(
+                    'text-2xl font-bold tabular-nums',
+                    isIncoming(selectedTx) ? 'text-emerald-400' : 'text-content-primary',
+                  )}
+                >
+                  {isIncoming(selectedTx) ? '+' : '−'}
+                  {formatMoney(Math.abs(parseFloat(selectedTx.amount)), selectedTx.currency)}
+                </p>
+                <p className="text-caption text-content-muted mt-1">{typeLabel(selectedTx)}</p>
+                <div className="mt-2 flex justify-center">
+                  <StatusBadge status={selectedTx.status || 'completed'} />
+                </div>
+              </div>
+
+              <div className="rounded-card border border-line-subtle px-4">
+                <DetailRow label="Date & time" value={formatDate(selectedTx.created_at)} />
+                <DetailRow label="Type" value={typeLabel(selectedTx)} />
+                <DetailRow label="Currency" value={selectedTx.currency} />
+                {selectedTx.reference && (
+                  <DetailRow label="Reference" value={selectedTx.reference} mono />
+                )}
+                {selectedTx.description && (
+                  <DetailRow label="Description" value={selectedTx.description} />
+                )}
+                {selectedTx.account_number && (
+                  <DetailRow
+                    label="Account"
+                    value={maskAccountNumber(selectedTx.account_number)}
+                    mono
+                  />
+                )}
+                <DetailRow label="Transaction ID" value={selectedTx.id} mono />
+              </div>
+
+              <div className="flex gap-2">
+                <Button
+                  variant="secondary"
+                  fullWidth
+                  leftIcon={<Copy className="w-4 h-4" />}
+                  onClick={() => copyId(selectedTx.id)}
+                >
+                  {copied ? 'Copied' : 'Copy ID'}
+                </Button>
+                <Button fullWidth onClick={() => setSelectedTx(null)}>
+                  Close
+                </Button>
+              </div>
+
+              <p className="text-micro text-content-muted text-center flex items-center justify-center gap-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                Recorded on the Rubicon Capital ledger
+              </p>
+            </div>
+          )}
+        </Modal>
+
+        {/* ── Send Money ── */}
         <Modal
           open={showModal}
           onClose={() => {
@@ -332,46 +463,57 @@ export default function TransferPage() {
             setFormError('');
           }}
           title="Send Money"
-          description="Enter the recipient's Rubicon account number and amount."
+          description="Transfer to any Rubicon account number in the same currency."
         >
           <div className="space-y-4">
             {formError && <Alert tone="error">{formError}</Alert>}
 
-            <Select
-              label="From account"
-              value={fromAccount}
-              onChange={(e) => setFromAccount(e.target.value)}
-              required
-            >
-              <option value="">Select an account</option>
-              {usableAccounts.map((a) => {
-                const m = currencyMeta(a.currency);
-                return (
-                  <option key={a.id} value={a.id}>
-                    {m.flag} {a.account_name || `${a.currency} Account`} —{' '}
-                    {maskAccountNumber(a.account_number)} ({formatMoney(a.balance, a.currency)})
-                  </option>
-                );
-              })}
-            </Select>
+            <div className="rounded-card border border-line-subtle bg-surface-raised/30 p-3 space-y-3">
+              <p className="text-caption text-content-muted flex items-center gap-1.5">
+                <Wallet className="w-3.5 h-3.5" />
+                From
+              </p>
+              <Select
+                label="Account"
+                value={fromAccount}
+                onChange={(e) => setFromAccount(e.target.value)}
+                required
+              >
+                <option value="">Select an account</option>
+                {usableAccounts.map((a) => {
+                  const m = currencyMeta(a.currency);
+                  return (
+                    <option key={a.id} value={a.id}>
+                      {m.flag} {a.account_name || `${a.currency} Account`} —{' '}
+                      {maskAccountNumber(a.account_number)} ({formatMoney(a.balance, a.currency)})
+                    </option>
+                  );
+                })}
+              </Select>
+              {sel && (
+                <div className="flex items-center justify-between px-1">
+                  <span className="text-caption text-content-muted">Available balance</span>
+                  <span className="text-sm font-bold tabular-nums">
+                    {formatMoney(sel.balance, sel.currency)}
+                  </span>
+                </div>
+              )}
+            </div>
 
-            {sel && (
-              <div className="rounded-control border border-line-subtle bg-surface-raised/40 px-3 py-2.5 flex items-center justify-between">
-                <span className="text-caption text-content-muted">Available</span>
-                <span className="text-sm font-bold tabular-nums">
-                  {formatMoney(sel.balance, sel.currency)}
-                </span>
-              </div>
-            )}
-
-            <Input
-              label="Recipient account number"
-              value={toNumber}
-              onChange={(e) => setToNumber(e.target.value.replace(/[^0-9A-Za-z-]/g, ''))}
-              placeholder="401837294501"
-              required
-              hint="12-digit Rubicon number. Same currency only for internal transfers."
-            />
+            <div className="rounded-card border border-line-subtle bg-surface-raised/30 p-3 space-y-3">
+              <p className="text-caption text-content-muted flex items-center gap-1.5">
+                <Send className="w-3.5 h-3.5" />
+                To
+              </p>
+              <Input
+                label="Recipient account number"
+                value={toNumber}
+                onChange={(e) => setToNumber(e.target.value.replace(/[^0-9A-Za-z-]/g, ''))}
+                placeholder="e.g. 401837294501"
+                required
+                hint="12-digit Rubicon number. Same currency required for instant credit."
+              />
+            </div>
 
             <Input
               label="Amount"
@@ -390,17 +532,18 @@ export default function TransferPage() {
               }
               hint={
                 sel
-                  ? `Max you can send: ${formatMoney(sel.balance, sel.currency)}`
+                  ? `Maximum: ${formatMoney(sel.balance, sel.currency)}`
                   : 'Select an account first'
               }
             />
 
             <Input
-              label="Reference (optional)"
+              label="Payment reference (optional)"
               value={reference}
               onChange={(e) => setReference(e.target.value)}
-              placeholder="e.g. Rent payment"
-              hint="Shown to the recipient on their statement."
+              placeholder="e.g. Rent · Invoice 1042"
+              hint="Appears on both statements."
+              maxLength={80}
             />
           </div>
           <div className="mt-6 flex gap-3">
