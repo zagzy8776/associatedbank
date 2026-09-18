@@ -1,12 +1,11 @@
 /**
  * Enhanced admin routes — account controls, audit log, transaction management.
- * Balance adjust uses SAVEPOINTs; transactions.user_id is always set (NOT NULL).
  */
 import { Router } from 'express';
 import { query, withTransaction } from '../db.js';
 import { authMiddleware, adminMiddleware } from '../auth.js';
 import { createNotification, createAuditLog } from '../helpers.js';
-import { getUserContact, emailBalanceAdjust, voidEmail } from '../email.js';
+import { getUserContact, emailBalanceAdjust, emailAccountLock, voidEmail } from '../email.js';
 
 const router = Router();
 
@@ -69,6 +68,20 @@ router.post('/api/admin/accounts/:id/status', authMiddleware, adminMiddleware, a
       `Your account has been ${labels[action]}.${req.body.reason ? ` Reason: ${req.body.reason}` : ''}`,
       { account_id: req.params.id, action, reason: req.body.reason }
     );
+    if (['lock', 'unlock', 'block', 'unblock'].includes(action)) {
+      voidEmail((async () => {
+        const contact = await getUserContact(result.profile_id);
+        if (contact?.email) {
+          await emailAccountLock({
+            to: contact.email,
+            fullName: contact.full_name,
+            locked: ['lock', 'block'].includes(action),
+            reason: req.body.reason,
+            scope: 'account',
+          });
+        }
+      })());
+    }
     await createAuditLog(
       req.user.id, action, 'account', req.params.id,
       result.before, { status: result.status, is_locked: result.is_locked },
@@ -87,7 +100,6 @@ router.post('/api/admin/accounts/:id/adjust', authMiddleware, adminMiddleware, a
     const { amount, reason, description } = req.body || {};
     const raw = typeof amount === 'string' ? String(amount).replace(/,/g, '').trim() : amount;
     const amt = parseFloat(raw);
-
     if (!Number.isFinite(amt) || amt === 0) {
       return res.status(400).json({ error: 'Valid non-zero amount required' });
     }
@@ -109,7 +121,6 @@ router.post('/api/admin/accounts/:id/adjust', authMiddleware, adminMiddleware, a
       if (newBalance < 0) throw new Error('Resulting balance cannot be negative');
 
       await client.query(`UPDATE accounts SET balance = $1 WHERE id = $2`, [newBalance, req.params.id]);
-
       await tryInSavepoint(client, 'sp_avail', async () => {
         await client.query(`UPDATE accounts SET available_balance = $1 WHERE id = $2`, [newBalance, req.params.id]);
       });
@@ -128,7 +139,6 @@ router.post('/api/admin/accounts/:id/adjust', authMiddleware, adminMiddleware, a
           [req.params.id, userId, txType, amt, currency, desc, ref]
         );
       });
-
       if (!attempt1.ok) {
         const attempt2 = await tryInSavepoint(client, 'sp_tx2', async () => {
           await client.query(
@@ -203,11 +213,7 @@ router.post('/api/admin/accounts/:id/transactions', authMiddleware, adminMiddlew
         const r = await client.query(
           `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference, status)
            VALUES ($1, $2, $3, $4, $5, $6, $7, 'completed') RETURNING *`,
-          [
-            req.params.id, a.user_id, type, amt, a.currency,
-            description || `Simulated ${type}`,
-            reference || `SIM-${Date.now().toString(36).toUpperCase()}`,
-          ]
+          [req.params.id, a.user_id, type, amt, a.currency, description || `Simulated ${type}`, reference || `SIM-${Date.now().toString(36).toUpperCase()}`]
         );
         txRow = r.rows[0];
       });
@@ -215,11 +221,7 @@ router.post('/api/admin/accounts/:id/transactions', authMiddleware, adminMiddlew
         const r = await client.query(
           `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference)
            VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-          [
-            req.params.id, a.user_id, type, amt, a.currency,
-            description || `Simulated ${type}`,
-            reference || `SIM-${Date.now().toString(36).toUpperCase()}`,
-          ]
+          [req.params.id, a.user_id, type, amt, a.currency, description || `Simulated ${type}`, reference || `SIM-${Date.now().toString(36).toUpperCase()}`]
         );
         txRow = r.rows[0];
       }
@@ -232,7 +234,6 @@ router.post('/api/admin/accounts/:id/transactions', authMiddleware, adminMiddlew
           await client.query(`UPDATE accounts SET available_balance = $1 WHERE id = $2`, [nb, req.params.id]);
         });
       }
-
       return { transaction: txRow };
     });
 
@@ -240,7 +241,6 @@ router.post('/api/admin/accounts/:id/transactions', authMiddleware, adminMiddlew
       req.user?.id, 'add_transaction', 'account', req.params.id,
       null, { type, amount: amt, description, update_balance }, reason, req.ip
     );
-
     res.json({ success: true, ...result });
   } catch (err) {
     console.error('accounts/:id/transactions error:', err);
