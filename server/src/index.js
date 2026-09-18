@@ -125,6 +125,22 @@ app.get('/api/accounts', authMiddleware, async (req, res) => {
         [req.user.id]
       )).rows;
     }
+    // Auto-repair any account missing a number (legacy rows)
+    for (const row of rows) {
+      if (!row.account_number) {
+        try {
+          const identity = await buildAccountIdentity({ currency: row.currency, account_name: row.account_name });
+          await query(`UPDATE accounts SET account_number = $1 WHERE id = $2`, [identity.account_number, row.id]);
+          row.account_number = identity.account_number;
+          if (!row.routing_number) {
+            await query(`UPDATE accounts SET routing_number = $1, account_type = COALESCE(account_type, 'current') WHERE id = $2`, [identity.routing_number, row.id]).catch(() => {});
+            row.routing_number = identity.routing_number;
+          }
+        } catch (e) {
+          console.warn('backfill account_number failed', row.id, e.message);
+        }
+      }
+    }
     res.json({ accounts: rows });
   } catch (err) {
     console.error(err);
@@ -134,22 +150,62 @@ app.get('/api/accounts', authMiddleware, async (req, res) => {
 
 app.post('/api/accounts', authMiddleware, async (req, res) => {
   try {
-    const { currency, account_name, account_type } = req.body;
-    if (!['GBP', 'USD', 'EUR'].includes(currency)) return res.status(400).json({ error: 'Invalid currency' });
+    const { currency, account_name, account_type } = req.body || {};
+    if (!['GBP', 'USD', 'EUR'].includes(currency)) {
+      return res.status(400).json({ error: 'Invalid currency. Choose GBP, USD, or EUR.' });
+    }
     const existing = await query(`SELECT id FROM accounts WHERE user_id = $1 AND currency = $2`, [req.user.id, currency]);
     if (existing.rows.length) return res.status(409).json({ error: `You already have a ${currency} account` });
+
     const identity = await buildAccountIdentity({ currency, account_name, account_type });
-    const { rows } = await query(
-      `INSERT INTO accounts (user_id, account_number, currency, account_name, account_type, routing_number, balance)
-       VALUES ($1, $2, $3, $4, $5, $6, 0) RETURNING *`,
-      [req.user.id, identity.account_number, currency, identity.account_name, identity.account_type, identity.routing_number]
-    );
-    await query(`INSERT INTO activity_log (user_id, action, description, metadata) VALUES ($1, 'create_account', $2, $3)`,
-      [req.user.id, `Created ${currency} account`, JSON.stringify({ account_id: rows[0].id, account_number: identity.account_number })]).catch(() => {});
-    res.status(201).json({ account: rows[0] });
+    if (!identity.account_number) {
+      return res.status(500).json({ error: 'Could not generate account number' });
+    }
+
+    let account;
+    try {
+      const { rows } = await query(
+        `INSERT INTO accounts (user_id, account_number, currency, account_name, account_type, routing_number, balance, status)
+         VALUES ($1, $2, $3, $4, $5, $6, 0, 'active') RETURNING *`,
+        [req.user.id, identity.account_number, currency, identity.account_name, identity.account_type, identity.routing_number]
+      );
+      account = rows[0];
+    } catch (e1) {
+      console.warn('full insert failed, minimal retry:', e1.message);
+      const { rows } = await query(
+        `INSERT INTO accounts (user_id, account_number, currency, account_name, balance)
+         VALUES ($1, $2, $3, $4, 0) RETURNING *`,
+        [req.user.id, identity.account_number, currency, identity.account_name]
+      );
+      account = rows[0];
+      await query(
+        `UPDATE accounts SET account_type = $1, routing_number = $2, status = 'active' WHERE id = $3`,
+        [identity.account_type, identity.routing_number, account.id]
+      ).catch(() => {});
+    }
+
+    if (!account.account_number) {
+      account.account_number = identity.account_number;
+      await query(`UPDATE accounts SET account_number = $1 WHERE id = $2`, [identity.account_number, account.id]).catch(() => {});
+    }
+
+    await query(
+      `INSERT INTO activity_log (user_id, action, description, metadata) VALUES ($1, 'create_account', $2, $3)`,
+      [req.user.id, `Created ${currency} account ${account.account_number}`, JSON.stringify({ account_id: account.id, account_number: account.account_number })]
+    ).catch(() => {});
+
+    res.status(201).json({
+      account: {
+        ...account,
+        account_number: account.account_number || identity.account_number,
+        account_type: account.account_type || identity.account_type,
+        routing_number: account.routing_number || identity.routing_number,
+        account_name: account.account_name || identity.account_name,
+      },
+    });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to create account' });
+    console.error('create account error:', err);
+    res.status(500).json({ error: err.message || 'Failed to create account' });
   }
 });
 
@@ -157,7 +213,14 @@ app.get('/api/accounts/:id', authMiddleware, async (req, res) => {
   try {
     const { rows } = await query(`SELECT * FROM accounts WHERE id = $1 AND user_id = $2`, [req.params.id, req.user.id]);
     if (!rows.length) return res.status(404).json({ error: 'Account not found' });
-    res.json({ account: rows[0] });
+    const account = rows[0];
+    if (!account.account_number) {
+      const identity = await buildAccountIdentity({ currency: account.currency, account_name: account.account_name });
+      await query(`UPDATE accounts SET account_number = $1 WHERE id = $2`, [identity.account_number, account.id]).catch(() => {});
+      account.account_number = identity.account_number;
+      account.routing_number = account.routing_number || identity.routing_number;
+    }
+    res.json({ account });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch account' });
   }
@@ -250,7 +313,7 @@ app.patch('/api/admin/accounts/:id/lock', authMiddleware, adminMiddleware, async
 
 app.post('/api/admin/accounts', authMiddleware, adminMiddleware, async (req, res) => {
   try {
-    const { user_id, currency, account_name, account_type, initial_deposit } = req.body;
+    const { user_id, currency, account_name, account_type, initial_deposit } = req.body || {};
     if (!user_id || !['GBP', 'USD', 'EUR'].includes(currency)) {
       return res.status(400).json({ error: 'user_id and valid currency required' });
     }
@@ -259,12 +322,22 @@ app.post('/api/admin/accounts', authMiddleware, adminMiddleware, async (req, res
     const deposit = parseFloat(initial_deposit) || 0;
     const identity = await buildAccountIdentity({ currency, account_name, account_type });
     const result = await withTransaction(async (client) => {
-      const { rows } = await client.query(
-        `INSERT INTO accounts (user_id, account_number, currency, account_name, account_type, routing_number, balance)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-        [user_id, identity.account_number, currency, identity.account_name, identity.account_type, identity.routing_number, deposit]
-      );
-      const account = rows[0];
+      let account;
+      try {
+        const { rows } = await client.query(
+          `INSERT INTO accounts (user_id, account_number, currency, account_name, account_type, routing_number, balance, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'active') RETURNING *`,
+          [user_id, identity.account_number, currency, identity.account_name, identity.account_type, identity.routing_number, deposit]
+        );
+        account = rows[0];
+      } catch (_) {
+        const { rows } = await client.query(
+          `INSERT INTO accounts (user_id, account_number, currency, account_name, balance)
+           VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+          [user_id, identity.account_number, currency, identity.account_name, deposit]
+        );
+        account = rows[0];
+      }
       if (deposit > 0) {
         try {
           await client.query(
@@ -282,10 +355,10 @@ app.post('/api/admin/accounts', authMiddleware, adminMiddleware, async (req, res
       }
       return account;
     });
-    res.status(201).json({ account: result });
+    res.status(201).json({ account: { ...result, account_number: result.account_number || identity.account_number } });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Failed to create account' });
+    res.status(500).json({ error: err.message || 'Failed to create account' });
   }
 });
 
@@ -398,11 +471,19 @@ app.post('/api/admin/requests/:id/review', authMiddleware, adminMiddleware, asyn
           account_name: request.account_name,
           account_type: 'current',
         });
-        await client.query(
-          `INSERT INTO accounts (user_id, account_number, currency, account_name, account_type, routing_number, balance)
-           VALUES ($1, $2, $3, $4, $5, $6, 0)`,
-          [request.requester_id, identity.account_number, request.currency, identity.account_name, identity.account_type, identity.routing_number]
-        );
+        try {
+          await client.query(
+            `INSERT INTO accounts (user_id, account_number, currency, account_name, account_type, routing_number, balance, status)
+             VALUES ($1, $2, $3, $4, $5, $6, 0, 'active')`,
+            [request.requester_id, identity.account_number, request.currency, identity.account_name, identity.account_type, identity.routing_number]
+          );
+        } catch (_) {
+          await client.query(
+            `INSERT INTO accounts (user_id, account_number, currency, account_name, balance)
+             VALUES ($1, $2, $3, $4, 0)`,
+            [request.requester_id, identity.account_number, request.currency, identity.account_name]
+          );
+        }
       }
       return { status };
     });
