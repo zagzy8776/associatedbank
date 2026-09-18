@@ -47,7 +47,7 @@ export function AdminExtraTabs(p: Props) {
                   <p className="text-caption text-content-muted truncate">{u.email} · {u.account_count || 0} accounts</p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  {u.is_locked ? <Badge tone="danger">Locked</Badge> : <Badge tone="success">Active</Badge>}
+                  {u.is_locked ? <Badge tone="negative">Locked</Badge> : <Badge tone="positive">Active</Badge>}
                   <Button size="sm" variant="secondary" onClick={() => toggleUserLock(u.id, u.is_locked)}>
                     {u.is_locked ? 'Unlock' : 'Lock'}
                   </Button>
