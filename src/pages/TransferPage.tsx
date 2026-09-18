@@ -3,12 +3,12 @@ import { api, formatMoney } from '../lib/api';
 import { currencyMeta } from '../lib/currencies';
 import { maskAccountNumber, formatRelativeDay, formatDate } from '../lib/format';
 import {
-  Alert, Badge, Button, Card, EmptyState, Input, Modal, PageHeader, Select,
+  Alert, Button, Card, EmptyState, Input, Modal, PageHeader, Select,
   SectionHeading, Skeleton, SkeletonCard, StatusBadge,
 } from '../components/ui';
 import {
-  ArrowDownLeft, ArrowLeftRight, ArrowUpRight, CheckCircle2, Clock,
-  Copy, Hash, Receipt, Send, Wallet,
+  ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Clock,
+  Copy, Send, Wallet,
 } from 'lucide-react';
 import { cx } from '../lib/designTokens';
 
@@ -199,13 +199,13 @@ export default function TransferPage() {
         <Card className="relative p-6 overflow-hidden">
           <div className="absolute inset-0 bg-gradient-to-br from-brand-600/15 via-transparent to-brand-400/5 pointer-events-none" />
           <div className="relative">
-            <div className="flex items-start justify-between gap-4">
-              <div className="min-w-0">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0 flex-1">
                 <p className="text-caption text-content-muted mb-1 flex items-center gap-1.5">
                   <Wallet className="w-3.5 h-3.5" />
                   Available to send
                 </p>
-                <p className="text-2xl md:text-3xl font-bold tracking-tight tabular-nums">
+                <p className="text-2xl sm:text-3xl font-bold tracking-tight tabular-nums break-all">
                   {loading ? (
                     <Skeleton className="h-8 w-40" />
                   ) : (
@@ -220,7 +220,12 @@ export default function TransferPage() {
                       : `${accounts.length} accounts across ${Object.keys(balanceByCurrency).length} currencies`}
                 </p>
               </div>
-              <Button onClick={openSend} leftIcon={<Send className="w-4 h-4" />} disabled={!usableAccounts.length}>
+              <Button
+                onClick={openSend}
+                leftIcon={<Send className="w-4 h-4" />}
+                disabled={!usableAccounts.length}
+                className="w-full sm:w-auto shrink-0"
+              >
                 Send Money
               </Button>
             </div>
@@ -373,7 +378,6 @@ export default function TransferPage() {
           </div>
         )}
 
-        {/* ── Transaction detail ── */}
         <Modal
           open={selectedTx !== null}
           onClose={() => {
@@ -446,16 +450,10 @@ export default function TransferPage() {
                   Close
                 </Button>
               </div>
-
-              <p className="text-micro text-content-muted text-center flex items-center justify-center gap-1.5">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                Recorded on the Rubicon Capital ledger
-              </p>
             </div>
           )}
         </Modal>
 
-        {/* ── Send Money ── */}
         <Modal
           open={showModal}
           onClose={() => {
@@ -463,7 +461,7 @@ export default function TransferPage() {
             setFormError('');
           }}
           title="Send Money"
-          description="Transfer to any Rubicon account number in the same currency."
+          description="Send to a Rubicon account in the same currency."
         >
           <div className="space-y-4">
             {formError && <Alert tone="error">{formError}</Alert>}
@@ -511,7 +509,7 @@ export default function TransferPage() {
                 onChange={(e) => setToNumber(e.target.value.replace(/[^0-9A-Za-z-]/g, ''))}
                 placeholder="e.g. 401837294501"
                 required
-                hint="12-digit Rubicon number. Same currency required for instant credit."
+                hint="12-digit account number · same currency"
               />
             </div>
 
@@ -542,7 +540,7 @@ export default function TransferPage() {
               value={reference}
               onChange={(e) => setReference(e.target.value)}
               placeholder="e.g. Rent · Invoice 1042"
-              hint="Appears on both statements."
+              hint="Shown on both statements"
               maxLength={80}
             />
           </div>
