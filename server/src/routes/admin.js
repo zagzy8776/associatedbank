@@ -6,10 +6,10 @@ import { Router } from 'express';
 import { query, withTransaction } from '../db.js';
 import { authMiddleware, adminMiddleware } from '../auth.js';
 import { createNotification, createAuditLog } from '../helpers.js';
+import { getUserContact, emailBalanceAdjust, voidEmail } from '../email.js';
 
 const router = Router();
 
-/** Run SQL inside a savepoint so failure does not abort the outer transaction. */
 async function tryInSavepoint(client, name, fn) {
   await client.query(`SAVEPOINT ${name}`);
   try {
@@ -23,7 +23,6 @@ async function tryInSavepoint(client, name, fn) {
   }
 }
 
-// Admin: account status controls
 router.post('/api/admin/accounts/:id/status', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { action, reason } = req.body;
@@ -83,10 +82,6 @@ router.post('/api/admin/accounts/:id/status', authMiddleware, adminMiddleware, a
   }
 });
 
-/**
- * Admin credit/debit.
- * Always writes transactions.user_id from accounts.user_id (column is NOT NULL).
- */
 router.post('/api/admin/accounts/:id/adjust', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { amount, reason, description } = req.body || {};
@@ -113,10 +108,8 @@ router.post('/api/admin/accounts/:id/adjust', authMiddleware, adminMiddleware, a
       newBalance = oldBalance + amt;
       if (newBalance < 0) throw new Error('Resulting balance cannot be negative');
 
-      // 1) Required balance update
       await client.query(`UPDATE accounts SET balance = $1 WHERE id = $2`, [newBalance, req.params.id]);
 
-      // 2) Optional columns — never abort main TX
       await tryInSavepoint(client, 'sp_avail', async () => {
         await client.query(`UPDATE accounts SET available_balance = $1 WHERE id = $2`, [newBalance, req.params.id]);
       });
@@ -124,12 +117,10 @@ router.post('/api/admin/accounts/:id/adjust', authMiddleware, adminMiddleware, a
         await client.query(`UPDATE accounts SET updated_at = now() WHERE id = $1`, [req.params.id]);
       });
 
-      // 3) Ledger — user_id is REQUIRED (NOT NULL). Use safe type names.
       const txType = amt > 0 ? 'deposit' : 'withdrawal';
       const desc = description || reason || `Admin ${amt > 0 ? 'credit' : 'debit'}`;
       const ref = `ADJ-${Date.now().toString(36).toUpperCase()}`;
 
-      // Try richest insert first, then minimal — both always include user_id
       const attempt1 = await tryInSavepoint(client, 'sp_tx1', async () => {
         await client.query(
           `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference, status)
@@ -147,7 +138,6 @@ router.post('/api/admin/accounts/:id/adjust', authMiddleware, adminMiddleware, a
           );
         });
         if (!attempt2.ok) {
-          // Last resort: absolute minimum columns
           await client.query(
             `INSERT INTO transactions (account_id, user_id, type, amount, currency)
              VALUES ($1, $2, $3, $4, $5)`,
@@ -164,6 +154,20 @@ router.post('/api/admin/accounts/:id/adjust', authMiddleware, adminMiddleware, a
       `${Math.abs(amt).toLocaleString('en-GB')} ${currency} ${amt > 0 ? 'added to' : 'removed from'} your account.`,
       { account_id: req.params.id, amount: amt, reason }
     );
+    voidEmail((async () => {
+      const contact = await getUserContact(userId);
+      if (contact?.email) {
+        await emailBalanceAdjust({
+          to: contact.email,
+          fullName: contact.full_name,
+          amount: amt,
+          currency,
+          credit: amt > 0,
+          reason: reason || description,
+          newBalance,
+        });
+      }
+    })());
     await createAuditLog(
       req.user?.id,
       'balance_adjust',
@@ -182,7 +186,6 @@ router.post('/api/admin/accounts/:id/adjust', authMiddleware, adminMiddleware, a
   }
 });
 
-// Admin: add simulated transaction
 router.post('/api/admin/accounts/:id/transactions', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { type, amount, description, reference, update_balance, reason } = req.body || {};
@@ -245,7 +248,6 @@ router.post('/api/admin/accounts/:id/transactions', authMiddleware, adminMiddlew
   }
 });
 
-// Admin: view audit logs
 router.get('/api/admin/audit-logs', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { target_type, target_id, limit } = req.query;
