@@ -17,7 +17,8 @@ import transferRoutes from './routes/transfers.js';
 import cryptoRoutes from './routes/crypto.js';
 import notificationRoutes from './routes/notifications.js';
 import adminRoutes from './routes/admin.js';
-import { mountCoreRoutes } from './routes/coreApi.js';
+import { mountCoreA } from './routes/coreA.js';
+import { mountCoreB } from './routes/coreB.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 if (!process.env.VERCEL) {
@@ -118,10 +119,12 @@ app.get('/api/admin/me', authMiddleware, adminMiddleware, async (req, res) => {
   res.json({ user: { id: req.user.id || 'admin-owner', email: req.user.email, role: 'admin', full_name: 'Owner' } });
 });
 
-mountCoreRoutes(app, {
+const coreDeps = {
   query, withTransaction, authMiddleware, adminMiddleware, getProfile,
   createNotification, createAuditLog, buildAccountIdentity, signToken,
-});
+};
+mountCoreA(app, coreDeps);
+mountCoreB(app, coreDeps);
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', bank: 'Rubicon Capital' }));
 
