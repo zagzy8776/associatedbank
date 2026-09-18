@@ -12,7 +12,6 @@ export interface ModalProps {
   onClose: () => void;
   title: string;
   description?: string;
-  /** Optional id of the element that describes the dialog. */
   children: ReactNode;
   footer?: ReactNode;
   /** Tailwind max-width class for the panel (defaults to max-w-md). */
@@ -22,9 +21,10 @@ export interface ModalProps {
 }
 
 /**
- * Accessible dialog (Req 12.1–12.6, 20.4, 20.5):
- * backdrop overlay, scroll lock, focus trapping, ESC to close and focus
- * restoration to the previously active element.
+ * Accessible dialog with mobile-safe layout:
+ * - respects notch / status bar (safe-area insets)
+ * - max height so title + close never clip off-screen
+ * - sticky header; body scrolls independently
  */
 export function Modal({
   open,
@@ -39,7 +39,6 @@ export function Modal({
   const panelRef = useRef<HTMLDivElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
 
-  /* Move focus into the dialog on open and restore it on close. */
   useEffect(() => {
     if (!open) return;
     previouslyFocused.current = document.activeElement as HTMLElement | null;
@@ -50,7 +49,6 @@ export function Modal({
     };
   }, [open]);
 
-  /* Lock background scrolling while the dialog is open (Req 12.5). */
   useEffect(() => {
     if (!open) return;
     const previous = document.body.style.overflow;
@@ -63,17 +61,15 @@ export function Modal({
   if (!open) return null;
 
   const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    /* ESC closes the dialog (Req 20.5). */
     if (e.key === 'Escape') {
       e.stopPropagation();
       onClose();
       return;
     }
-    /* Keep Tab cycling inside the dialog (Req 20.4 / 12.2). */
     if (e.key !== 'Tab') return;
-    const nodes = Array.from(panelRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []).filter(
-      (el) => el.offsetParent !== null || el === document.activeElement,
-    );
+    const nodes = Array.from(
+      panelRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [],
+    ).filter((el) => el.offsetParent !== null || el === document.activeElement);
     if (nodes.length === 0) {
       e.preventDefault();
       panelRef.current?.focus();
@@ -95,7 +91,15 @@ export function Modal({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-modal flex items-end sm:items-center justify-center p-4 animate-fade-in"
+      className={cx(
+        'fixed inset-0 z-modal flex items-end sm:items-center justify-center',
+        'animate-fade-in',
+        /* Safe area so panel never sits under notch / home indicator */
+        'pt-[max(1rem,env(safe-area-inset-top))]',
+        'pb-[max(1rem,env(safe-area-inset-bottom))]',
+        'px-[max(1rem,env(safe-area-inset-left))]',
+        'pr-[max(1rem,env(safe-area-inset-right))]',
+      )}
       onKeyDown={handleKeyDown}
     >
       <div
@@ -103,6 +107,7 @@ export function Modal({
         aria-hidden="true"
         onClick={closeOnBackdrop ? onClose : undefined}
       />
+
       <div
         ref={panelRef}
         role="dialog"
@@ -111,30 +116,62 @@ export function Modal({
         aria-describedby={description ? descriptionId : undefined}
         tabIndex={-1}
         className={cx(
-          'relative w-full bg-gradient-to-br from-surface-raised to-slate-800/90 border border-line-strong',
-          'rounded-panel shadow-modal animate-slide-up focus:outline-none',
+          'relative w-full flex flex-col',
+          'bg-gradient-to-br from-surface-raised to-slate-800/90',
+          'border border-line-strong shadow-modal',
+          'rounded-t-2xl sm:rounded-panel',
+          'animate-slide-up focus:outline-none',
+          /* Never taller than the visible viewport (minus safe padding) */
+          'max-h-[min(92dvh,calc(100vh-2rem))]',
           widthClass,
         )}
       >
-        <div className="flex items-start justify-between gap-4 px-6 pt-6 pb-4 border-b border-line-subtle">
-          <div>
-            <h3 id={titleId} className="text-heading text-content-primary">
+        {/* Sticky header — always visible */}
+        <div
+          className={cx(
+            'flex items-start justify-between gap-3',
+            'px-5 sm:px-6 pt-5 sm:pt-6 pb-3',
+            'border-b border-line-subtle shrink-0',
+            'bg-surface-raised/95 backdrop-blur-sm',
+            'rounded-t-2xl sm:rounded-t-[inherit]',
+          )}
+        >
+          <div className="min-w-0 pr-2">
+            <h3
+              id={titleId}
+              className="text-heading text-content-primary leading-tight"
+            >
               {title}
             </h3>
             {description && (
-              <p id={descriptionId} className="text-caption text-content-secondary mt-1">
+              <p
+                id={descriptionId}
+                className="text-caption text-content-secondary mt-1 leading-snug"
+              >
                 {description}
               </p>
             )}
           </div>
-          <IconButton size="sm" label="Close dialog" onClick={onClose}>
+          <IconButton
+            size="sm"
+            label="Close dialog"
+            onClick={onClose}
+            className="shrink-0 -mr-1"
+          >
             <X className="w-5 h-5" />
           </IconButton>
         </div>
 
-        <div className="px-6 py-6">{children}</div>
+        {/* Scrollable body */}
+        <div className="px-5 sm:px-6 py-5 overflow-y-auto overscroll-contain flex-1 min-h-0">
+          {children}
+        </div>
 
-        {footer && <div className="px-6 pb-6 flex gap-3">{footer}</div>}
+        {footer && (
+          <div className="px-5 sm:px-6 pb-5 sm:pb-6 pt-0 flex gap-3 shrink-0 border-t border-line-subtle">
+            {footer}
+          </div>
+        )}
       </div>
     </div>,
     document.body,
