@@ -2,13 +2,17 @@ import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Alert, Button, Input, SkipLink } from '../components/ui';
+import { BrandLogo } from '../components/BrandLogo';
 import { cx } from '../lib/designTokens';
 import { isEmail, passwordStrength, validateAuth, type FieldErrors } from '../lib/validation';
 import {
-  ArrowRight, Fingerprint, Lock, Mail, ShieldCheck, User,
+  ArrowRight, Landmark, Lock, Mail, Phone, ShieldCheck, User,
 } from 'lucide-react';
 
 type Field = 'fullName' | 'email' | 'password';
+
+const AUTH_PHOTO =
+  'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1600&q=80';
 
 export default function AuthPage({ mode }: { mode: 'login' | 'signup' }) {
   const { login, register } = useAuth();
@@ -30,7 +34,6 @@ export default function AuthPage({ mode }: { mode: 'login' | 'signup' }) {
   const values = useMemo(() => ({ fullName, email, password }), [fullName, email, password]);
   const strength = useMemo(() => passwordStrength(password), [password]);
 
-  /* Live re-validation for a field the user has already interacted with. */
   const validateField = (field: Field, next: typeof values = values) => {
     const all = validateAuth(mode, next);
     setErrors((prev) => ({ ...prev, [field]: all[field] }));
@@ -68,71 +71,108 @@ export default function AuthPage({ mode }: { mode: 'login' | 'signup' }) {
   const emailLooksValid = touched.email && isEmail(email) && !errors.email;
 
   return (
-    <div className="min-h-screen bg-surface flex">
+    <div className="min-h-screen bg-[#070b14] text-white flex flex-col lg:flex-row">
       <SkipLink />
 
-      {/* Branding panel */}
-      <aside className="hidden lg:flex lg:w-1/2 bg-gradient-to-br from-slate-900 via-surface to-brand-700/10 items-center justify-center p-12 relative overflow-hidden">
-        <div
-          className="absolute inset-0 bg-[radial-gradient(circle_at_30%_50%,_rgba(245,158,11,0.08),transparent_50%)]"
-          aria-hidden="true"
-        />
-        <div className="relative z-10 max-w-md">
-          <div className="w-14 h-14 rounded-card bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center font-bold text-surface text-2xl mb-8 shadow-amber">
-            R
-          </div>
-          <h1 className="text-4xl font-semibold mb-4 tracking-tight">Rubicon Capital</h1>
-          <p className="text-content-secondary text-lg leading-relaxed mb-8">
-            Private multi-currency banking with complete administrative control and
-            institutional-grade transparency.
+      {/* Left: photo + brand (desktop) */}
+      <aside className="relative hidden lg:flex lg:w-[48%] xl:w-1/2 flex-col justify-between overflow-hidden">
+        <div className="absolute inset-0">
+          <img src={AUTH_PHOTO} alt="" className="h-full w-full object-cover" />
+          <div className="absolute inset-0 bg-[#070b14]/60" />
+          <div className="absolute inset-0 bg-gradient-to-t from-[#070b14] via-[#070b14]/50 to-[#070b14]/30" />
+          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_20%_30%,rgba(245,158,11,0.14),transparent_50%)]" />
+        </div>
+
+        <div className="relative z-10 p-10 xl:p-12">
+          <Link to="/" className="inline-block">
+            <BrandLogo size={40} withWordmark />
+          </Link>
+        </div>
+
+        <div className="relative z-10 p-10 xl:p-12 max-w-lg">
+          <p className="text-[11px] uppercase tracking-[0.2em] text-amber-400/90 mb-4 font-medium">
+            Client access
           </p>
-          <ul className="space-y-3 text-sm text-content-secondary">
-            <li className="flex items-center gap-2.5">
-              <ShieldCheck className="w-4 h-4 text-brand-400" aria-hidden="true" />
-              Encrypted connection to every account
+          <h1 className="text-3xl xl:text-4xl font-semibold tracking-tight leading-tight">
+            {isSignup ? 'Open your multi-currency relationship' : 'Sign in to your accounts'}
+          </h1>
+          <p className="mt-4 text-slate-300/90 leading-relaxed text-[15px]">
+            GBP, USD, and EUR under one login. Encrypted sessions, clear statements, and support in
+            London hours.
+          </p>
+          <ul className="mt-8 space-y-3 text-sm text-slate-300">
+            <li className="flex items-center gap-3">
+              <span className="w-8 h-8 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center">
+                <ShieldCheck className="w-4 h-4 text-amber-400" />
+              </span>
+              256-bit encryption on every session
             </li>
-            <li className="flex items-center gap-2.5">
-              <Fingerprint className="w-4 h-4 text-brand-400" aria-hidden="true" />
-              Identity checks on every sign-in
+            <li className="flex items-center gap-3">
+              <span className="w-8 h-8 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center">
+                <Landmark className="w-4 h-4 text-amber-400" />
+              </span>
+              SWIFT RBNKGB2L · institutional rails
             </li>
-            <li className="flex items-center gap-2.5">
-              <Lock className="w-4 h-4 text-brand-400" aria-hidden="true" />
-              Balances stay private on shared screens
+            <li className="flex items-center gap-3">
+              <span className="w-8 h-8 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center">
+                <Phone className="w-4 h-4 text-amber-400" />
+              </span>
+              Client services +44 (0) 20 7946 0958
             </li>
           </ul>
         </div>
+
+        <div className="relative z-10 px-10 xl:px-12 pb-10 text-[11px] text-slate-500 flex flex-wrap gap-x-4 gap-y-1">
+          <span>Mon–Fri 08:00–18:00 GMT</span>
+          <span className="text-slate-700">·</span>
+          <Link to="/" className="hover:text-amber-400 transition">
+            Back to website
+          </Link>
+        </div>
       </aside>
 
-      {/* Form */}
-      <main id="main-content" className="flex-1 flex items-center justify-center px-4 py-10 sm:px-8">
-        <div className="w-full max-w-md">
-          <div className="lg:hidden flex items-center gap-3 mb-10">
-            <div className="w-10 h-10 rounded-control bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center font-bold text-surface">
-              R
-            </div>
-            <span className="font-semibold text-lg">Rubicon Capital</span>
+      {/* Right: form */}
+      <main
+        id="main-content"
+        className="flex-1 flex flex-col justify-center px-5 sm:px-8 py-10 sm:py-14 relative"
+      >
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_80%_10%,rgba(245,158,11,0.06),transparent_40%)] pointer-events-none" />
+
+        <div className="relative w-full max-w-[420px] mx-auto">
+          {/* Mobile brand */}
+          <div className="lg:hidden mb-10">
+            <Link to="/" className="inline-block">
+              <BrandLogo size={34} withWordmark />
+            </Link>
+            <p className="mt-3 text-xs text-slate-500">
+              Secure client access · SWIFT RBNKGB2L
+            </p>
           </div>
 
-          <div className="rounded-panel border border-line-subtle bg-gradient-to-br from-surface-raised/70 to-surface-raised/40 p-6 sm:p-8 shadow-card backdrop-blur-sm">
-            <h2 className="text-title text-content-primary">
-              {isSignup ? 'Create your account' : 'Welcome back'}
-            </h2>
-            <p className="text-content-secondary text-sm mt-1.5 mb-8">
-              {isSignup
-                ? 'Open your Rubicon Capital profile in a few moments.'
-                : 'Sign in to access your multi-currency accounts.'}
-            </p>
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] backdrop-blur-sm p-6 sm:p-8 shadow-2xl shadow-black/20">
+            <div className="mb-7">
+              <h2 className="text-2xl font-semibold tracking-tight text-white">
+                {isSignup ? 'Create your account' : 'Welcome back'}
+              </h2>
+              <p className="text-sm text-slate-400 mt-2 leading-relaxed">
+                {isSignup
+                  ? 'Register to request accounts in GBP, USD, or EUR. Account numbers are issued after review.'
+                  : 'Sign in with the email and password linked to your Rubicon profile.'}
+              </p>
+            </div>
 
             {formError && (
-              <Alert tone="error" title="We could not complete that request" onDismiss={() => setFormError('')}>
-                {formError}
-              </Alert>
+              <div className="mb-5">
+                <Alert tone="error" title="Sign-in could not be completed" onDismiss={() => setFormError('')}>
+                  {formError}
+                </Alert>
+              </div>
             )}
 
             <form onSubmit={handleSubmit} noValidate className="space-y-5">
               {isSignup && (
                 <Input
-                  label="Full name"
+                  label="Full legal name"
                   required
                   value={fullName}
                   onChange={(e) => {
@@ -141,14 +181,14 @@ export default function AuthPage({ mode }: { mode: 'login' | 'signup' }) {
                   }}
                   onBlur={() => handleBlur('fullName')}
                   error={touched.fullName ? errors.fullName : undefined}
-                  placeholder="James Whitfield"
+                  placeholder="As it appears on your ID"
                   autoComplete="name"
                   leadingIcon={<User className="w-4 h-4" />}
                 />
               )}
 
               <Input
-                label="Email"
+                label="Email address"
                 type="email"
                 required
                 value={email}
@@ -158,7 +198,7 @@ export default function AuthPage({ mode }: { mode: 'login' | 'signup' }) {
                 }}
                 onBlur={() => handleBlur('email')}
                 error={touched.email ? errors.email : undefined}
-                placeholder="you@example.com"
+                placeholder="name@company.com"
                 autoComplete="email"
                 inputMode="email"
                 leadingIcon={<Mail className="w-4 h-4" />}
@@ -179,7 +219,8 @@ export default function AuthPage({ mode }: { mode: 'login' | 'signup' }) {
                   error={touched.password ? errors.password : undefined}
                   placeholder={isSignup ? 'At least 8 characters' : '••••••••'}
                   autoComplete={isSignup ? 'new-password' : 'current-password'}
-                  hint={isSignup ? undefined : 'Your password is never saved in the browser.'}
+                  leadingIcon={<Lock className="w-4 h-4" />}
+                  hint={isSignup ? undefined : 'Never share your password. Rubicon staff will not ask for it.'}
                 />
 
                 {isSignup && password.length > 0 && (
@@ -187,9 +228,9 @@ export default function AuthPage({ mode }: { mode: 'login' | 'signup' }) {
                     <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
                       <div
                         className={cx(
-                          'h-full rounded-full transition-all duration-slow ease-standard',
+                          'h-full rounded-full transition-all duration-300',
                           strength.tone === 'negative' && 'bg-red-400',
-                          strength.tone === 'warning' && 'bg-brand-400',
+                          strength.tone === 'warning' && 'bg-amber-400',
                           strength.tone === 'positive' && 'bg-emerald-400',
                         )}
                         style={{ width: `${(strength.score / 4) * 100}%` }}
@@ -197,9 +238,9 @@ export default function AuthPage({ mode }: { mode: 'login' | 'signup' }) {
                     </div>
                     <span
                       className={cx(
-                        'text-caption font-medium w-12 text-right',
+                        'text-xs font-medium w-14 text-right',
                         strength.tone === 'negative' && 'text-red-400',
-                        strength.tone === 'warning' && 'text-brand-400',
+                        strength.tone === 'warning' && 'text-amber-400',
                         strength.tone === 'positive' && 'text-emerald-400',
                       )}
                     >
@@ -217,38 +258,43 @@ export default function AuthPage({ mode }: { mode: 'login' | 'signup' }) {
                 loadingLabel={isSignup ? 'Creating your account…' : 'Signing you in…'}
                 rightIcon={<ArrowRight className="w-4 h-4" />}
               >
-                {isSignup ? 'Create account' : 'Sign in'}
+                {isSignup ? 'Create account' : 'Sign in securely'}
               </Button>
             </form>
 
-            <div className="mt-6 flex items-center justify-center gap-2 text-caption text-content-muted">
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" aria-hidden="true" />
-              Secured with bank-grade encryption
+            <div className="mt-6 pt-5 border-t border-white/5 flex flex-col items-center gap-2">
+              <div className="flex items-center gap-2 text-xs text-slate-500">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" aria-hidden="true" />
+                Encrypted connection · TLS 1.3
+              </div>
+              <p className="text-[11px] text-slate-600 text-center leading-relaxed max-w-xs">
+                Only sign in on devices you trust. If anything looks wrong, close this page and call client services.
+              </p>
             </div>
           </div>
 
-          <p className="mt-6 text-center text-sm text-content-secondary">
+          <p className="mt-7 text-center text-sm text-slate-400">
             {isSignup ? (
               <>
                 Already a client?{' '}
-                <Link
-                  to="/login"
-                  className="text-brand-400 hover:text-brand-300 font-medium transition-colors duration-fast"
-                >
+                <Link to="/login" className="text-amber-400 hover:text-amber-300 font-medium transition">
                   Sign in
                 </Link>
               </>
             ) : (
               <>
-                Don’t have an account?{' '}
-                <Link
-                  to="/signup"
-                  className="text-brand-400 hover:text-brand-300 font-medium transition-colors duration-fast"
-                >
-                  Open one
+                New to Rubicon?{' '}
+                <Link to="/signup" className="text-amber-400 hover:text-amber-300 font-medium transition">
+                  Open an account
                 </Link>
               </>
             )}
+          </p>
+
+          <p className="mt-8 text-center text-[11px] text-slate-600 lg:hidden">
+            <Link to="/" className="hover:text-amber-400 transition">
+              ← Back to website
+            </Link>
           </p>
         </div>
       </main>
