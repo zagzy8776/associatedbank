@@ -6,6 +6,12 @@ import { Router } from 'express';
 import { query, withTransaction } from '../db.js';
 import { authMiddleware, adminMiddleware } from '../auth.js';
 import { createNotification, createAuditLog } from '../helpers.js';
+import {
+  getUserContact,
+  emailDepositRequested,
+  emailDepositDecision,
+  voidEmail,
+} from '../email.js';
 
 const router = Router();
 
@@ -42,6 +48,19 @@ router.post('/api/deposits', authMiddleware, async (req, res) => {
        VALUES ($1, 'deposit_request', 'Deposit request submitted', $2)`,
       [req.user.id, JSON.stringify({ deposit_request_id: rows[0].id, amount: amt })]
     ).catch(() => {});
+
+    voidEmail((async () => {
+      const contact = await getUserContact(req.user.id);
+      if (contact?.email) {
+        await emailDepositRequested({
+          to: contact.email,
+          fullName: contact.full_name,
+          amount: amt,
+          currency: acct.currency,
+          reference: rows[0].reference || String(rows[0].id).slice(0, 8),
+        });
+      }
+    })());
 
     res.status(201).json({ deposit_request: rows[0] });
   } catch (err) {
@@ -105,14 +124,12 @@ router.patch('/api/admin/deposits/:id', authMiddleware, adminMiddleware, async (
       const dep = depRes.rows[0];
       if (dep.status !== 'pending') throw new Error('Request already reviewed');
 
-      // admin_id may be UUID-only; skip if env admin has non-UUID id
       try {
         await client.query(
           `UPDATE deposit_requests SET status = $1, admin_note = $2, reviewed_at = now() WHERE id = $3`,
           [status, admin_note || null, req.params.id]
         );
-      } catch (_
-      ) {
+      } catch (_) {
         await client.query(
           `UPDATE deposit_requests SET status = $1 WHERE id = $2`,
           [status, req.params.id]
@@ -132,7 +149,6 @@ router.patch('/api/admin/deposits/:id', authMiddleware, adminMiddleware, async (
           );
         } catch (_) {}
 
-        // Ledger with user_id (required)
         try {
           await client.query(
             `INSERT INTO transactions (account_id, user_id, type, amount, currency, description, reference, status)
@@ -176,6 +192,23 @@ router.patch('/api/admin/deposits/:id', authMiddleware, adminMiddleware, async (
       );
       return { status, id: dep.id };
     });
+
+    voidEmail((async () => {
+      const depRow = await query(`SELECT * FROM deposit_requests WHERE id = $1`, [req.params.id]);
+      const dep = depRow.rows[0];
+      if (!dep) return;
+      const contact = await getUserContact(dep.customer_id);
+      if (!contact?.email) return;
+      await emailDepositDecision({
+        to: contact.email,
+        fullName: contact.full_name,
+        amount: dep.amount,
+        currency: dep.currency,
+        approved: result.status === 'approved',
+        note: admin_note,
+        reference: dep.reference || `DEP-${String(dep.id).slice(0, 8)}`,
+      });
+    })());
 
     res.json({ success: true, ...result });
   } catch (err) {
