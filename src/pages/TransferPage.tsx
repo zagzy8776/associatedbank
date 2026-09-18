@@ -49,7 +49,6 @@ export default function TransferPage() {
       const rows: Account[] = a.accounts || [];
       setAccounts(rows);
       setTransfers(t.transfers || []);
-      // Auto-select primary account so balance is always visible in the form
       setFromAccount((prev) => {
         if (prev && rows.some((r) => r.id === prev)) return prev;
         const first = rows.find((r) => !r.is_locked && (!r.status || r.status === 'active'));
@@ -71,7 +70,6 @@ export default function TransferPage() {
     [accounts],
   );
 
-  /** Balance by currency — what a real bank shows on the money page */
   const balanceByCurrency = useMemo(() => {
     const map: Record<string, number> = {};
     for (const a of accounts) {
@@ -151,7 +149,6 @@ export default function TransferPage() {
       <PageHeader title="Transfers" subtitle="Send money from your accounts" backTo="/dashboard" />
       <main className="max-w-4xl mx-auto px-4 sm:px-6 py-6 pb-28 space-y-6">
 
-        {/* Hero — AVAILABLE BALANCE first (like a real bank), not total sent */}
         <Card className="relative p-6 overflow-hidden">
           <div className="absolute inset-0 bg-gradient-to-br from-brand-600/15 via-transparent to-brand-400/5 pointer-events-none" />
           <div className="relative">
@@ -181,7 +178,6 @@ export default function TransferPage() {
               </Button>
             </div>
 
-            {/* Per-currency chips when more than one */}
             {Object.keys(balanceByCurrency).length > 0 && (
               <div className="mt-5 flex flex-wrap gap-2">
                 {Object.entries(balanceByCurrency).map(([code, total]) => {
@@ -201,7 +197,6 @@ export default function TransferPage() {
               </div>
             )}
 
-            {/* Secondary: activity summary */}
             <p className="text-micro text-content-muted mt-4">
               {stats.count} transfer{stats.count !== 1 ? 's' : ''} ·{' '}
               {formatMoney(stats.sent, primaryCurrency)} sent ·{' '}
@@ -221,7 +216,6 @@ export default function TransferPage() {
           </Alert>
         )}
 
-        {/* Your accounts — quick pick */}
         {accounts.length > 0 && (
           <section>
             <SectionHeading title="From accounts" icon={Wallet} />
@@ -229,6 +223,7 @@ export default function TransferPage() {
               {accounts.map((a) => {
                 const m = currencyMeta(a.currency);
                 const active = a.id === fromAccount;
+                const isDisabled = Boolean(a.is_locked) || Boolean(a.status && a.status !== 'active');
                 return (
                   <button
                     key={a.id}
@@ -237,13 +232,13 @@ export default function TransferPage() {
                       setFromAccount(a.id);
                       openSend();
                     }}
-                    disabled={!!a.is_locked || (a.status && a.status !== 'active')}
+                    disabled={isDisabled}
                     className={cx(
                       'text-left rounded-card border px-4 py-3 transition-colors',
                       active
                         ? 'border-brand-400 bg-brand-500/10'
                         : 'border-line-subtle bg-surface-raised/40 hover:border-line-strong',
-                      (a.is_locked || (a.status && a.status !== 'active')) && 'opacity-50',
+                      isDisabled && 'opacity-50',
                     )}
                   >
                     <div className="flex items-center justify-between gap-3">
@@ -330,7 +325,7 @@ export default function TransferPage() {
             setFormError('');
           }}
           title="Send Money"
-          description="Enter the recipient’s Rubicon account number and amount."
+          description="Enter the recipient's Rubicon account number and amount."
         >
           <div className="space-y-4">
             {formError && <Alert tone="error">{formError}</Alert>}
