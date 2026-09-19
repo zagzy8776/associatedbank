@@ -25,7 +25,6 @@ async function request(path: string, options: RequestInit = {}) {
   return data;
 }
 
-/** Prefer dedicated admin token; fall back to customer token (promoted admin). */
 async function adminRequest(path: string, options: RequestInit = {}) {
   const token = getAdminToken() || getToken();
   const headers: Record<string, string> = {
@@ -44,21 +43,30 @@ async function adminRequest(path: string, options: RequestInit = {}) {
 }
 
 export const api = {
-  // Auth
   register: (body: { email: string; password: string; full_name: string }) =>
     request('/auth/register', { method: 'POST', body: JSON.stringify(body) }),
   login: (body: { email: string; password: string }) =>
     request('/auth/login', { method: 'POST', body: JSON.stringify(body) }),
   me: () => request('/auth/me'),
 
-  // Customer
+  changePassword: (body: { current_password: string; new_password: string }) =>
+    request('/auth/change-password', { method: 'POST', body: JSON.stringify(body) }),
+  forgotPassword: (email: string) =>
+    request('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) }),
+  resetPassword: (body: { token: string; new_password: string }) =>
+    request('/auth/reset-password', { method: 'POST', body: JSON.stringify(body) }),
+
+  adminSendDigest: (to?: string) =>
+    adminRequest('/admin/emails/digest', { method: 'POST', body: JSON.stringify(to ? { to } : {}) }),
+  adminSendStatements: (body?: { user_id?: string; period_label?: string }) =>
+    adminRequest('/admin/emails/statements', { method: 'POST', body: JSON.stringify(body || {}) }),
+
   getAccounts: () => request('/accounts'),
   createAccount: (body: { currency: string; account_name?: string; account_type?: string }) =>
     request('/accounts', { method: 'POST', body: JSON.stringify(body) }),
   getAccount: (id: string) => request(`/accounts/${id}`),
   getTransactions: (id: string) => request(`/accounts/${id}/transactions`),
-  transfer: (body: any) => request('/transfer', { method: 'POST', body: JSON.stringify(body) }),
-  /** Deposit = request for admin approval (never instant self-credit). */
+  transfer: (body: any) => request('/transfers', { method: 'POST', body: JSON.stringify(body) }),
   deposit: (body: { account_id: string; amount: number | string; description?: string; reference?: string }) =>
     request('/deposits', {
       method: 'POST',
@@ -68,14 +76,12 @@ export const api = {
         reference: body.reference || body.description,
       }),
     }),
-  /** Withdrawals are not self-serve; keep stub that fails clearly. */
   withdraw: async (_body: any) => {
     throw new Error('Withdrawals must be arranged with client services. Use Transfers to move money between your accounts.');
   },
   createRequest: (body: any) => request('/requests', { method: 'POST', body: JSON.stringify(body) }),
   myRequests: () => request('/requests/mine'),
 
-  // Admin
   adminOverview: () => adminRequest('/admin/overview'),
   adminUsers: (q = '') => adminRequest(`/admin/users?q=${encodeURIComponent(q)}`),
   lockUser: (id: string, locked: boolean) =>
