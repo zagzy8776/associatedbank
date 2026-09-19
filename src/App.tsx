@@ -13,6 +13,9 @@ import DepositPage from './pages/DepositPage';
 import CryptoPage from './pages/CryptoPage';
 import TransactionHistoryPage from './pages/TransactionHistoryPage';
 import ProfilePage from './pages/ProfilePage';
+import ForgotPasswordPage from './pages/ForgotPasswordPage';
+import ResetPasswordPage from './pages/ResetPasswordPage';
+import LegalPage from './pages/LegalPage';
 
 function SessionLoader() {
   return (
@@ -22,16 +25,13 @@ function SessionLoader() {
   );
 }
 
-/** Customer routes — normal bank users only */
 function CustomerProtected({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
   if (loading) return <SessionLoader />;
   if (!user) return <Navigate to="/login" replace />;
-  // Promoted admins still use customer banking UI; they must use /admin/login for console
   return <>{children}</>;
 }
 
-/** Admin console — ONLY via rubicon_admin_token from /admin/login */
 function AdminProtected({ children }: { children: React.ReactNode }) {
   const { admin, loading } = useAdminAuth();
   if (loading) return <SessionLoader />;
@@ -49,14 +49,18 @@ function AdminLoginGate() {
 export default function App() {
   return (
     <Routes>
-      {/* ── Strict admin console (separate credentials) ── */}
       <Route path="/admin/login" element={<AdminLoginGate />} />
       <Route path="/admin/*" element={<AdminProtected><AdminPanel /></AdminProtected>} />
 
-      {/* ── Customer banking ── */}
       <Route path="/" element={<LandingPage />} />
       <Route path="/login" element={<AuthPage mode="login" />} />
       <Route path="/signup" element={<AuthPage mode="signup" />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
+      <Route path="/terms" element={<LegalPage />} />
+      <Route path="/privacy" element={<LegalPage />} />
+      <Route path="/disclosures" element={<LegalPage />} />
+
       <Route path="/dashboard" element={<CustomerProtected><Dashboard /></CustomerProtected>} />
       <Route path="/account/:id" element={<CustomerProtected><AccountDetail /></CustomerProtected>} />
       <Route path="/account/:id/history" element={<CustomerProtected><TransactionHistoryPage /></CustomerProtected>} />
