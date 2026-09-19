@@ -109,9 +109,17 @@ app.patch('/api/admin/accounts/:id/lock', authMiddleware, adminMiddleware, async
 
 app.post('/api/admin/accounts', authMiddleware, adminMiddleware, async (req, res) => {
   try {
-    const { user_id, currency, account_name, account_type, initial_deposit } = req.body || {};
-    if (!user_id || !['GBP', 'USD', 'EUR'].includes(currency)) {
-      return res.status(400).json({ error: 'user_id and valid currency required' });
+    let { user_id, email, currency, account_name, account_type, initial_deposit } = req.body || {};
+    if (!['GBP', 'USD', 'EUR'].includes(currency)) {
+      return res.status(400).json({ error: 'Valid currency required (GBP, USD, EUR)' });
+    }
+    if (!user_id && email) {
+      const found = await query(`SELECT id FROM profiles WHERE email = $1`, [String(email).toLowerCase().trim()]);
+      if (!found.rows.length) return res.status(404).json({ error: 'No customer with that email' });
+      user_id = found.rows[0].id;
+    }
+    if (!user_id) {
+      return res.status(400).json({ error: 'Customer email or user_id required' });
     }
     const existing = await query(`SELECT id FROM accounts WHERE user_id = $1 AND currency = $2`, [user_id, currency]);
     if (existing.rows.length) return res.status(409).json({ error: `Customer already has a ${currency} account` });
