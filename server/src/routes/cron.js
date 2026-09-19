@@ -4,8 +4,8 @@
  *   Authorization: Bearer <CRON_SECRET>
  *   or header x-cron-secret: <CRON_SECRET>
  *
- * Example daily job:
- *   POST https://www.rubiconcapital.org/api/cron/daily-digest
+ * Example:
+ *   GET or POST https://www.rubiconcapital.org/api/cron/daily-digest
  */
 import { Router } from 'express';
 import { query } from '../db.js';
@@ -25,7 +25,7 @@ function authorizeCron(req, res, next) {
   return res.status(401).json({ error: 'Unauthorized cron request' });
 }
 
-router.post('/api/cron/daily-digest', authorizeCron, async (req, res) => {
+async function runDailyDigest(req, res) {
   try {
     const to = (req.body?.to || process.env.ADMIN_EMAIL || process.env.SUPPORT_EMAIL || '').toLowerCase();
     if (!to) return res.status(400).json({ error: 'No ADMIN_EMAIL configured' });
@@ -64,7 +64,10 @@ router.post('/api/cron/daily-digest', authorizeCron, async (req, res) => {
     console.error('cron digest:', err);
     res.status(500).json({ error: 'Digest failed' });
   }
-});
+}
+
+router.get('/api/cron/daily-digest', authorizeCron, runDailyDigest);
+router.post('/api/cron/daily-digest', authorizeCron, runDailyDigest);
 
 router.get('/api/cron/health', authorizeCron, (req, res) => {
   res.json({ ok: true, service: 'rubicon-cron' });
