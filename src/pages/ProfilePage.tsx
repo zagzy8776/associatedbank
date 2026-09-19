@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { api } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import { formatShortDate } from '../lib/format';
 import { Badge, Button, Card, Input, Modal, PageHeader, StatusBadge } from '../components/ui';
@@ -60,8 +61,10 @@ export default function ProfilePage() {
     if (newPw !== confirmPw) { setError('Passwords do not match'); return; }
     setBusy(true);
     try {
+      await api.changePassword({ current_password: currentPw, new_password: newPw });
       setShowPasswordModal(false); setCurrentPw(''); setNewPw(''); setConfirmPw('');
-      setSuccess('Password changed successfully.'); setTimeout(() => setSuccess(''), 3000);
+      setSuccess('Password changed successfully. A confirmation email was sent.');
+      setTimeout(() => setSuccess(''), 4000);
     } catch (e: any) { setError(e?.message || 'Password change failed'); }
     finally { setBusy(false); }
   };
@@ -75,7 +78,6 @@ export default function ProfilePage() {
         {error && <div className="rounded-control bg-red-500/10 border border-red-500/30 text-red-300 px-4 py-3 text-sm">{error}</div>}
         {success && <div className="rounded-control bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 px-4 py-3 text-sm">{success}</div>}
 
-        {/* ── Profile Hero ── */}
         <Card className="p-6">
           <div className="flex items-center gap-4">
             <div className="w-16 h-16 rounded-full bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white font-bold text-xl shadow-amber shrink-0">
@@ -99,7 +101,6 @@ export default function ProfilePage() {
           </div>
         </Card>
 
-        {/* ── Personal Information ── */}
         <SettingsSection title="Personal Information">
           <SettingsRow icon={User} label="Full Name" value={user?.full_name}
             onClick={() => openEdit('full_name', 'Full Name', user?.full_name || '')} />
@@ -115,7 +116,6 @@ export default function ProfilePage() {
             onClick={() => openEdit('country', 'Country', profileFields.country)} />
         </SettingsSection>
 
-        {/* ── Security ── */}
         <SettingsSection title="Security">
           <SettingsRow icon={KeyRound} label="Change Password" value="Last changed —"
             onClick={() => { setError(''); setShowPasswordModal(true); }} />
@@ -130,7 +130,6 @@ export default function ProfilePage() {
             trailing={<SettingsToggle enabled={loginAlerts} onChange={setLoginAlerts} label="Toggle login alerts" />} />
         </SettingsSection>
 
-        {/* ── Account Limits ── */}
         <SettingsSection title="Account Limits">
           <div className="px-5 py-4 space-y-4">
             <LimitBar label="Per Transaction" used={0} total={5000} currency="GBP" />
@@ -145,7 +144,6 @@ export default function ProfilePage() {
           </div>
         </SettingsSection>
 
-        {/* ── Preferences ── */}
         <SettingsSection title="Preferences">
           <SettingsRow icon={Bell} label="Push Notifications" value={notifEnabled ? 'Enabled' : 'Disabled'}
             trailing={<SettingsToggle enabled={notifEnabled} onChange={setNotifEnabled} label="Toggle notifications" />} />
@@ -155,22 +153,16 @@ export default function ProfilePage() {
             onClick={() => { setSuccess('Currency preference coming soon.'); setTimeout(() => setSuccess(''), 3000); }} />
         </SettingsSection>
 
-        {/* ── Support ── */}
         <SettingsSection title="Support">
           <SettingsRow icon={HelpCircle} label="Help Centre"
             onClick={() => { setSuccess('Help centre coming soon.'); setTimeout(() => setSuccess(''), 3000); }} />
           <SettingsRow icon={LifeBuoy} label="Contact Support" value="+44 (0) 20 7946 0958" />
-          <SettingsRow icon={Smartphone} label="Report a Problem"
-            onClick={() => { setSuccess('Problem reporting coming soon.'); setTimeout(() => setSuccess(''), 3000); }} />
         </SettingsSection>
 
-        {/* ── Legal ── */}
         <SettingsSection title="Legal">
-          <SettingsRow icon={FileText} label="Terms of Service"
-            onClick={() => { setSuccess('Terms page coming soon.'); setTimeout(() => setSuccess(''), 3000); }} />
-          <SettingsRow icon={Scale} label="Privacy Policy"
-            onClick={() => { setSuccess('Privacy page coming soon.'); setTimeout(() => setSuccess(''), 3000); }} />
-          <SettingsRow icon={Landmark} label="Regulatory Information" value="Rubicon Capital Ltd" />
+          <SettingsRow icon={FileText} label="Terms of Service" onClick={() => navigate('/terms')} />
+          <SettingsRow icon={Scale} label="Privacy Policy" onClick={() => navigate('/privacy')} />
+          <SettingsRow icon={Landmark} label="Disclosures" onClick={() => navigate('/disclosures')} />
         </SettingsSection>
 
         <div className="text-center pt-2 pb-4">
@@ -183,7 +175,6 @@ export default function ProfilePage() {
         </Button>
       </main>
 
-      {/* ── Edit Profile Modal ── */}
       <Modal open={showEditModal} onClose={() => setShowEditModal(false)} title={`Edit ${editLabel}`}>
         <div className="space-y-4">
           {error && <div className="text-sm text-red-400">{error}</div>}
@@ -196,7 +187,6 @@ export default function ProfilePage() {
         </div>
       </Modal>
 
-      {/* ── Change Password Modal ── */}
       <Modal open={showPasswordModal} onClose={() => { setShowPasswordModal(false); setError(''); }}
         title="Change Password" description="Enter your current password and choose a new one.">
         <div className="space-y-4">
