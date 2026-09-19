@@ -1,31 +1,25 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useAuth } from '../context/AuthContext';
 import { api, formatMoney } from '../lib/api';
-import { currencyMeta } from '../lib/currencies';
-import { formatDate, maskAccountNumber, titleCase } from '../lib/format';
-import { required } from '../lib/validation';
+import { formatDate, maskAccountNumber } from '../lib/format';
 import {
-  Alert, Badge, Button, Card, EmptyState, ErrorState, Input, LoadingState, Modal,
-  SearchField, SectionHeading, Select, SkeletonList, StatusBadge,
+  Alert, Button, Card, EmptyState, ErrorState, Input, LoadingState, Modal,
+  SearchField, SectionHeading, Select, SkeletonList,
 } from '../components/ui';
 import { cx } from '../lib/designTokens';
 import AdminLayout, { type AdminTab } from '../components/AdminLayout';
 import EditTransactionModal from '../components/EditTransactionModal';
 import { AdminExtraTabs } from '../components/AdminExtraTabs';
 import {
-  Activity, ArrowDownLeft, ArrowUpRight, Check, ClipboardList, Coins, Lock, Plus,
-  ScrollText, Shield, Unlock, Users, Wallet, X,
+  Activity, Lock, Plus, Shield, Users, Wallet,
 } from 'lucide-react';
 
 type Tab = AdminTab;
 
 const SEARCHABLE: Tab[] = ['users', 'accounts', 'transactions'];
 
-const EMPTY_CREATE_FORM = { user_id: '', currency: 'GBP', account_name: '', initial_deposit: '' };
+const EMPTY_CREATE_FORM = { email: '', currency: 'GBP', account_name: '', initial_deposit: '' };
 
 export default function AdminPanel() {
-  const { user } = useAuth();
-
   const [tab, setTab] = useState<Tab>('overview');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -39,7 +33,6 @@ export default function AdminPanel() {
   const [accounts, setAccounts] = useState<any[]>([]);
   const [transactions, setTransactions] = useState<any[]>([]);
   const [activity, setActivity] = useState<any[]>([]);
-  const [requests, setRequests] = useState<any[]>([]);
   const [depositRequests, setDepositRequests] = useState<any[]>([]);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [cryptoAccounts, setCryptoAccounts] = useState<any[]>([]);
@@ -73,8 +66,7 @@ export default function AdminPanel() {
       } else if (target === 'activity') {
         setActivity((await api.adminActivity()).activity ?? []);
       } else if (target === 'deposits') {
-        setRequests((await api.adminRequests()).requests ?? []);
-        try { setDepositRequests((await api.adminDeposits()).deposits ?? []); } catch { /* may not exist yet */ }
+        try { setDepositRequests((await api.adminDeposits()).deposits ?? []); } catch { setDepositRequests([]); }
       } else if (target === 'audit') {
         try { setAuditLogs((await api.getAuditLogs()).audit_logs ?? []); } catch { setAuditLogs([]); }
       } else if (target === 'crypto') {
@@ -169,11 +161,31 @@ export default function AdminPanel() {
     } finally { setBusy(false); }
   };
 
+  const sendDigest = async () => {
+    setBusy(true); setActionError('');
+    try {
+      const r = await api.adminSendDigest();
+      setNotice(`Daily digest emailed (${r.pending_deposits ?? 0} pending deposits).`);
+    } catch (e: any) {
+      setActionError(e?.message || 'Digest failed');
+    } finally { setBusy(false); }
+  };
+
+  const sendStatements = async () => {
+    setBusy(true); setActionError('');
+    try {
+      const r = await api.adminSendStatements();
+      setNotice(`Statements emailed to ${r.sent ?? 0} customer(s).`);
+    } catch (e: any) {
+      setActionError(e?.message || 'Statements failed');
+    } finally { setBusy(false); }
+  };
+
   const createAccount = async () => {
     setBusy(true); setCreateError('');
     try {
       await api.adminCreateAccount({
-        user_id: createForm.user_id,
+        email: createForm.email.trim(),
         currency: createForm.currency,
         account_name: createForm.account_name || undefined,
         initial_deposit: createForm.initial_deposit ? parseFloat(createForm.initial_deposit) : 0,
@@ -189,8 +201,9 @@ export default function AdminPanel() {
 
   return (
     <AdminLayout activeTab={tab} onTabChange={selectTab}>
-      <div className="flex items-center justify-between gap-4 mb-6">
-        <div />
+      <div className="flex flex-wrap items-center justify-end gap-2 mb-6">
+        <Button variant="secondary" size="sm" onClick={sendDigest} loading={busy}>Email digest</Button>
+        <Button variant="secondary" size="sm" onClick={sendStatements} loading={busy}>Email statements</Button>
         <Button variant="primary" size="sm" onClick={() => { setCreateError(''); setShowCreate(true); }}
           leftIcon={<Plus className="w-4 h-4" />}>New account</Button>
       </div>
@@ -282,7 +295,9 @@ export default function AdminPanel() {
       <Modal open={showCreate} onClose={() => setShowCreate(false)} title="Create account for a client">
         <div className="space-y-4">
           {createError && <Alert tone="error">{createError}</Alert>}
-          <Input label="Customer user ID" value={createForm.user_id} onChange={e => setCreateForm({ ...createForm, user_id: e.target.value })} />
+          <Input label="Customer email" type="email" value={createForm.email}
+            onChange={e => setCreateForm({ ...createForm, email: e.target.value })}
+            placeholder="client@example.com" />
           <Select label="Currency" value={createForm.currency} onChange={e => setCreateForm({ ...createForm, currency: e.target.value })}>
             <option value="GBP">GBP</option>
             <option value="USD">USD</option>
