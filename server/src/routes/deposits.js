@@ -1,6 +1,5 @@
 /**
  * Deposit request routes — customer submits, admin approves.
- * Hardened for NOT NULL user_id and optional available_balance.
  */
 import { Router } from 'express';
 import { query, withTransaction } from '../db.js';
@@ -11,11 +10,15 @@ import {
   emailDepositRequested,
   emailDepositDecision,
   voidEmail,
+  sendEmail,
+  layout,
+  escapeHtml,
+  row,
+  money,
 } from '../email.js';
 
 const router = Router();
 
-// Customer: submit deposit request
 router.post('/api/deposits', authMiddleware, async (req, res) => {
   try {
     const { account_id, amount, reference } = req.body || {};
@@ -60,6 +63,20 @@ router.post('/api/deposits', authMiddleware, async (req, res) => {
           reference: rows[0].reference || String(rows[0].id).slice(0, 8),
         });
       }
+      const adminTo = (process.env.ADMIN_EMAIL || process.env.SUPPORT_EMAIL || '').toLowerCase();
+      if (adminTo) {
+        const html = layout({
+          title: 'New deposit request',
+          preheader: 'A customer submitted a deposit for review.',
+          bodyHtml: `<p style="margin:0 0 16px;font-size:15px;color:#cbd5e1;">A deposit request is waiting for review.</p>
+            <table role="presentation" width="100%">
+              ${row('Customer', escapeHtml(contact?.email || req.user?.id || '—'))}
+              ${row('Amount', escapeHtml(money(amt, acct.currency)))}
+              ${row('Account', escapeHtml(String(account_id)))}
+            </table>`,
+        });
+        await sendEmail({ to: adminTo, subject: `Deposit request · ${money(amt, acct.currency)}`, html });
+      }
     })());
 
     res.status(201).json({ deposit_request: rows[0] });
@@ -69,7 +86,6 @@ router.post('/api/deposits', authMiddleware, async (req, res) => {
   }
 });
 
-// Customer: list own deposit requests
 router.get('/api/deposits', authMiddleware, async (req, res) => {
   try {
     const { rows } = await query(
@@ -85,7 +101,6 @@ router.get('/api/deposits', authMiddleware, async (req, res) => {
   }
 });
 
-// Admin: list all deposit requests
 router.get('/api/admin/deposits', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const status = req.query.status;
@@ -107,7 +122,6 @@ router.get('/api/admin/deposits', authMiddleware, adminMiddleware, async (req, r
   }
 });
 
-// Admin: approve or reject deposit
 router.patch('/api/admin/deposits/:id', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { status, admin_note } = req.body || {};
