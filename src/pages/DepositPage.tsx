@@ -33,11 +33,28 @@ export default function DepositPage() {
   useEffect(() => { load(); }, [load]);
 
   const stats = useMemo(() => {
-    const total = deposits.reduce((s, d) => s + parseFloat(d.amount || '0'), 0);
-    const pending = deposits.filter(d => d.status === 'pending').length;
-    const approved = deposits.filter(d => d.status === 'approved').length;
-    return { total, pending, approved, count: deposits.length };
-  }, [deposits]);
+    const byCurrency: Record<string, number> = {};
+    let pending = 0;
+    let approved = 0;
+    for (const d of deposits) {
+      const cur = (d.currency || 'GBP').toUpperCase();
+      byCurrency[cur] = (byCurrency[cur] || 0) + (parseFloat(d.amount || '0') || 0);
+      if (d.status === 'pending') pending += 1;
+      if (d.status === 'approved') approved += 1;
+    }
+    const currencies = Object.keys(byCurrency);
+    const primaryCurrency = currencies[0] || accounts[0]?.currency || 'GBP';
+    const primaryTotal = byCurrency[primaryCurrency] || 0;
+    return {
+      byCurrency,
+      currencies,
+      primaryCurrency,
+      primaryTotal,
+      pending,
+      approved,
+      count: deposits.length,
+    };
+  }, [deposits, accounts]);
 
   const handleSubmit = async () => {
     setFormError(''); setSuccess('');
@@ -59,15 +76,30 @@ export default function DepositPage() {
       <PageHeader title="Deposits" subtitle="Request funds to your account" backTo="/dashboard" />
       <main className="max-w-4xl mx-auto px-4 sm:px-6 py-6 pb-28 space-y-6">
 
-        {/* ── Hero Summary ── */}
         <Card className="relative p-6 overflow-hidden">
           <div className="absolute inset-0 bg-gradient-to-br from-emerald-600/15 via-transparent to-emerald-400/5 pointer-events-none" />
-          <div className="relative flex items-center justify-between">
+          <div className="relative flex items-center justify-between gap-4 flex-wrap">
             <div>
-              <p className="text-caption text-content-muted mb-1">Total Deposited</p>
-              <p className="text-2xl md:text-3xl font-bold tracking-tight tabular-nums">
-                {loading ? <Skeleton className="h-8 w-32" /> : formatMoney(stats.total, 'GBP')}
+              <p className="text-caption text-content-muted mb-1">
+                {stats.currencies.length > 1 ? 'Deposits by currency' : 'Total deposited'}
               </p>
+              {loading ? (
+                <Skeleton className="h-8 w-32" />
+              ) : stats.currencies.length === 0 ? (
+                <p className="text-2xl md:text-3xl font-bold tracking-tight tabular-nums">{formatMoney(0, stats.primaryCurrency)}</p>
+              ) : stats.currencies.length === 1 ? (
+                <p className="text-2xl md:text-3xl font-bold tracking-tight tabular-nums">
+                  {formatMoney(stats.primaryTotal, stats.primaryCurrency)}
+                </p>
+              ) : (
+                <div className="space-y-1">
+                  {stats.currencies.map((code) => (
+                    <p key={code} className="text-lg md:text-xl font-bold tracking-tight tabular-nums">
+                      {formatMoney(stats.byCurrency[code], code)}
+                    </p>
+                  ))}
+                </div>
+              )}
               <p className="text-caption text-content-muted mt-1.5">
                 {stats.count} deposit{stats.count !== 1 ? 's' : ''} · {stats.approved} approved
               </p>
@@ -86,7 +118,6 @@ export default function DepositPage() {
         {error && <Alert tone="error" onDismiss={() => setError('')}>{error}</Alert>}
         {success && <Alert tone="success" onDismiss={() => setSuccess('')}>{success}</Alert>}
 
-        {/* ── Deposit History ── */}
         <SectionHeading title="Deposit History" icon={Clock} />
         {loading ? (
           <div className="space-y-3">{[1,2,3].map(i => <SkeletonCard key={i} />)}</div>
@@ -128,7 +159,6 @@ export default function DepositPage() {
           </div>
         )}
 
-        {/* ── Request Modal ── */}
         <Modal open={showModal} onClose={() => { setShowModal(false); setFormError(''); }}
           title="Request a Deposit" description="Your request will be reviewed by an admin before funds are credited.">
           <div className="space-y-4">
