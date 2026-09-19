@@ -5,6 +5,7 @@ import { Router } from 'express';
 import { query, withTransaction } from '../db.js';
 import { authMiddleware, adminMiddleware } from '../auth.js';
 import { createNotification, createAuditLog } from '../helpers.js';
+import { getUserContact, voidEmail, sendEmail, layout, escapeHtml, row } from '../email.js';
 import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
@@ -98,6 +99,20 @@ router.patch('/api/admin/crypto/:id', authMiddleware, adminMiddleware, async (re
       `Your ${crypto.asset} account has been ${status}.`, { crypto_account_id: crypto.id });
     await createAuditLog(req.user.id, `crypto_${status}`, 'crypto_account', crypto.id,
       { status: crypto.status }, { status }, admin_note, req.ip);
+
+    voidEmail((async () => {
+      const contact = await getUserContact(crypto.customer_id);
+      if (!contact?.email) return;
+      const title = status === 'active' ? 'Crypto account approved' : `Crypto account ${status}`;
+      const html = layout({
+        title,
+        preheader: `Your ${crypto.asset} account is now ${status}.`,
+        bodyHtml: `<p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#cbd5e1;">Hello ${escapeHtml((contact.full_name || '').split(' ')[0] || 'Client')}, your <strong style="color:#f8fafc;">${escapeHtml(crypto.asset)}</strong> account is now <strong>${escapeHtml(status)}</strong>.</p>
+          <table role="presentation" width="100%">${row('Asset', escapeHtml(crypto.asset))}${row('Wallet', escapeHtml(crypto.wallet_address || '—'))}${row('Status', escapeHtml(status))}</table>`,
+      });
+      await sendEmail({ to: contact.email, subject: `Rubicon Capital — ${title}`, html });
+    })());
+
     res.json({ success: true });
   } catch (err) { res.status(400).json({ error: err.message || 'Failed to update' }); }
 });
@@ -127,6 +142,19 @@ router.post('/api/admin/crypto/:id/adjust', authMiddleware, adminMiddleware, asy
         { crypto_account_id: crypto.id, amount: amt });
       await createAuditLog(req.user.id, 'crypto_adjust', 'crypto_account', crypto.id,
         { balance: crypto.balance }, { balance: newBal }, reason, req.ip);
+
+      voidEmail((async () => {
+        const contact = await getUserContact(crypto.customer_id);
+        if (!contact?.email) return;
+        const html = layout({
+          title: 'Crypto balance adjusted',
+          preheader: `${crypto.asset} balance updated.`,
+          bodyHtml: `<p style="margin:0 0 8px;font-size:24px;font-weight:700;color:#f8fafc;">${amt > 0 ? '+' : ''}${amt} ${escapeHtml(crypto.asset)}</p>
+            <table role="presentation" width="100%">${row('New balance', escapeHtml(String(newBal)))}${row('Asset', escapeHtml(crypto.asset))}</table>`,
+        });
+        await sendEmail({ to: contact.email, subject: `Rubicon Capital — ${crypto.asset} balance updated`, html });
+      })());
+
       return { newBalance: newBal };
     });
     res.json({ success: true, ...result });
