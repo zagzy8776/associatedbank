@@ -18,6 +18,7 @@ import cryptoRoutes from './routes/crypto.js';
 import notificationRoutes from './routes/notifications.js';
 import adminRoutes from './routes/admin.js';
 import emailOpsRoutes from './routes/emailOps.js';
+import cronRoutes from './routes/cron.js';
 import { mountCoreA } from './routes/coreA.js';
 import { mountCoreB } from './routes/coreB.js';
 
@@ -38,6 +39,7 @@ app.use(cryptoRoutes);
 app.use(notificationRoutes);
 app.use(adminRoutes);
 app.use(emailOpsRoutes);
+app.use(cronRoutes);
 
 app.post('/api/auth/register', async (req, res) => {
   try {
