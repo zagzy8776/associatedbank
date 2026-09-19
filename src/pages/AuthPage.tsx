@@ -74,7 +74,6 @@ export default function AuthPage({ mode }: { mode: 'login' | 'signup' }) {
     <div className="min-h-screen bg-[#070b14] text-white flex flex-col lg:flex-row">
       <SkipLink />
 
-      {/* Left: photo + brand (desktop) */}
       <aside className="relative hidden lg:flex lg:w-[48%] xl:w-1/2 flex-col justify-between overflow-hidden">
         <div className="absolute inset-0">
           <img src={AUTH_PHOTO} alt="" className="h-full w-full object-cover" />
@@ -131,7 +130,6 @@ export default function AuthPage({ mode }: { mode: 'login' | 'signup' }) {
         </div>
       </aside>
 
-      {/* Right: form */}
       <main
         id="main-content"
         className="flex-1 flex flex-col justify-center px-5 sm:px-8 py-10 sm:py-14 relative"
@@ -139,7 +137,6 @@ export default function AuthPage({ mode }: { mode: 'login' | 'signup' }) {
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_80%_10%,rgba(245,158,11,0.06),transparent_40%)] pointer-events-none" />
 
         <div className="relative w-full max-w-[420px] mx-auto">
-          {/* Mobile brand */}
           <div className="lg:hidden mb-10">
             <Link to="/" className="inline-block">
               <BrandLogo size={34} withWordmark />
@@ -250,6 +247,14 @@ export default function AuthPage({ mode }: { mode: 'login' | 'signup' }) {
                 )}
               </div>
 
+              {!isSignup && (
+                <div className="flex justify-end -mt-2">
+                  <Link to="/forgot-password" className="text-sm text-amber-400/90 hover:text-amber-300 transition">
+                    Forgot password?
+                  </Link>
+                </div>
+              )}
+
               <Button
                 type="submit"
                 fullWidth
@@ -267,9 +272,6 @@ export default function AuthPage({ mode }: { mode: 'login' | 'signup' }) {
                 <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" aria-hidden="true" />
                 Encrypted connection · TLS 1.3
               </div>
-              <p className="text-[11px] text-slate-600 text-center leading-relaxed max-w-xs">
-                Only sign in on devices you trust. If anything looks wrong, close this page and call client services.
-              </p>
             </div>
           </div>
 
